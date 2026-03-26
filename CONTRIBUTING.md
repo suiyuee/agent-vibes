@@ -6,8 +6,8 @@ Thanks for contributing to `agent-vibes`.
 
 Open pull requests against `main` unless a maintainer asks otherwise.
 
-Some legacy scripts and workflows still mention `dev` and `master`; treat those
-as repository debt, not as the current contribution target.
+Use `dev` as the integration branch when you need to validate changes before
+promoting them to `main`.
 
 ## Development Setup
 

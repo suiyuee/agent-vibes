@@ -330,7 +330,7 @@ If Cursor is installed in a non-standard location, set `CURSOR_BINARY_PATH`, `CU
 ### Deployment
 
 ```bash
-npm run release                # Merge dev → master → push (triggers CI deploy)
+npm run release                # Merge dev → main → push (triggers CI deploy)
 npm run antigravity:sync       # Sync Antigravity OAuth accounts to ANTIGRAVITY_STORAGE
 npm run codex:sync             # Sync Codex CLI auth.json into CODEX_* env vars
 ```
@@ -374,7 +374,7 @@ npm run issues                 # Collect logs & environment info, copy to clipbo
 
 - **`ci.yml`** — Quality gate on push/PR
   - Runs `lint`, `types`, `build`, `test`
-- **`deploy-proxy.yml`** — Auto-deploy on push to `master` (only `apps/protocol-bridge/**` changes)
+- **`deploy-proxy.yml`** — Auto-deploy on push to `main` (only `apps/protocol-bridge/**` changes)
   - Build → SCP to server → restart systemd service
   - Production uses Let's Encrypt SSL for HTTP/2
 - **`claude.yml`** — Claude Code automation
@@ -387,7 +387,7 @@ npm run issues                 # Collect logs & environment info, copy to clipbo
 | Branch             | Purpose                          |
 | ------------------ | -------------------------------- |
 | `dev`              | Development (default PR target)  |
-| `master`           | Production (auto-deploy on push) |
+| `main`             | Production (auto-deploy on push) |
 | `issue-{N}-{slug}` | Feature branches (created by CI) |
 
 ## Community

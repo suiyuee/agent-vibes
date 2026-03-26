@@ -3,7 +3,7 @@ name: Deploy Claude Proxy
 on:
   push:
     branches:
-      - master
+      - main
     paths:
       - "apps/protocol-bridge/**"
 
