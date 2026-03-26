@@ -196,7 +196,6 @@ import {
   ReportBugfixResultsResultSchema,
   ReportBugfixResultsSuccessSchema,
   ReportBugfixResultsToolCallSchema,
-  RequestContextArgsSchema,
   SandboxPolicy_Type,
   SandboxPolicySchema,
   SemSearchToolArgsSchema,
@@ -600,14 +599,6 @@ interface DiagnosticsArgs {
   toolCallId?: string
 }
 
-interface RequestContextArgs {
-  notesSessionId?: string
-  workspaceId?: string
-  notes_session_id?: string
-  workspace_id?: string
-  toolCallId?: string
-}
-
 interface McpArgs {
   serverName?: string
   server_name?: string
@@ -695,7 +686,6 @@ type ToolArgs =
   | EditFileArgs
   | DeleteFileArgs
   | DiagnosticsArgs
-  | RequestContextArgs
   | McpArgs
   | BackgroundShellSpawnArgs
   | ListMcpResourcesArgs
@@ -740,7 +730,6 @@ type ToolFamily =
   | "grep"
   | "glob"
   | "fetch"
-  | "request_context"
   | "mcp"
   | "mcp_auth"
   | "task"
@@ -874,7 +863,6 @@ export class CursorGrpcService {
     "ls",
     "delete",
     "grep",
-    "request_context",
     "mcp",
     "shell",
     "execute_hook",
@@ -1701,12 +1689,9 @@ export class CursorGrpcService {
         case "CLIENT_SIDE_TOOL_V2_FIX_LINTS":
           return "fix_lints"
         case "CLIENT_SIDE_TOOL_V2_WEB_SEARCH":
-        case "search_web":
         case "CLIENT_SIDE_TOOL_V2_KNOWLEDGE_BASE":
           return "web_search"
         case "CLIENT_SIDE_TOOL_V2_WEB_FETCH":
-        case "read_url_content":
-        case "view_content_chunk":
         case "CLIENT_SIDE_TOOL_V2_FETCH_PULL_REQUEST":
           return "web_fetch"
         case "CLIENT_SIDE_TOOL_V2_EXA_SEARCH":
@@ -1856,7 +1841,6 @@ export class CursorGrpcService {
     }
     if (normalized.includes("truncated")) return "truncated"
     if (normalized.includes("reflect")) return "reflect"
-    if (normalized.includes("requestcontext")) return "request_context"
     if (normalized.includes("executehook") || normalized === "hook") {
       return "execute_hook"
     }
@@ -3195,19 +3179,6 @@ export class CursorGrpcService {
           }),
         }
       }
-      case "request_context": {
-        const a = args as RequestContextArgs
-        const notesSessionId =
-          a.notesSessionId || a.notes_session_id || undefined
-        const workspaceId = a.workspaceId || a.workspace_id || undefined
-        return {
-          case: "requestContextArgs" as const,
-          value: create(RequestContextArgsSchema, {
-            notesSessionId,
-            workspaceId,
-          }),
-        }
-      }
       case "mcp": {
         const a = args as McpArgs
         const { name, toolName, providerIdentifier, rawArgs } =
@@ -3372,7 +3343,6 @@ export class CursorGrpcService {
       grep: "grepToolCall",
       glob: "globToolCall",
       fetch: "fetchToolCall",
-      request_context: "truncatedToolCall",
       mcp: "mcpToolCall",
       task: "taskToolCall",
       shell: "shellToolCall",
@@ -3599,7 +3569,6 @@ export class CursorGrpcService {
           }),
         }
       }
-      case "request_context":
       case "execute_hook":
         return {
           case: "truncatedToolCall" as const,
@@ -5007,7 +4976,7 @@ export class CursorGrpcService {
       }
     }
 
-    if (family === "request_context" || family === "execute_hook") {
+    if (family === "execute_hook") {
       const truncatedResultOneOf =
         status === "success"
           ? {
@@ -6196,7 +6165,7 @@ export class CursorGrpcService {
       if (oneOf.value) {
         const schema = this.getSchemaForCase(oneOf.case)
         if (schema) {
-          return Buffer.from(toBinary(schema, oneOf.value))
+          return Buffer.from(toBinary(schema as never, oneOf.value as never))
         }
       }
     } catch (error) {
@@ -6236,7 +6205,6 @@ export class CursorGrpcService {
       computerUseArgs: ComputerUseArgsSchema,
       writeShellStdinArgs: WriteShellStdinArgsSchema,
       executeHookArgs: ExecuteHookArgsSchema,
-      requestContextArgs: RequestContextArgsSchema,
       webSearchArgs: WebSearchArgsSchema,
       webFetchArgs: WebFetchArgsSchema,
       awaitArgs: AwaitArgsSchema,

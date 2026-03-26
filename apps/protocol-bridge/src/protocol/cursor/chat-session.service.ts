@@ -98,18 +98,6 @@ export interface ChatSession {
     }
   >
   interactionQueryId: number // auto-incrementing counter
-
-  // Session-local web document cache for read_url_content/view_content_chunk
-  webDocuments: Map<
-    string,
-    {
-      url: string
-      title: string
-      contentType: string
-      chunks: string[]
-      createdAt: Date
-    }
-  >
   todos: SessionTodoItem[]
 
   // Sub-agent context (active when a task tool call is running a sub-agent)
@@ -237,14 +225,6 @@ interface PersistedSubAgentContext {
   expectedToolCallIds: string[]
 }
 
-interface PersistedWebDocument {
-  url: string
-  title: string
-  contentType: string
-  chunks: string[]
-  createdAt: number
-}
-
 interface PersistedSessionRestartRecovery {
   restoredAt: number
   notice: string
@@ -298,7 +278,6 @@ interface PersistedChatSessionV1 {
   execId: number
   interactionQueryId: number
   todos: SessionTodoItem[]
-  webDocuments: PersistedWebDocument[]
   subAgentContext?: PersistedSubAgentContext
   restartRecovery?: PersistedSessionRestartRecovery
 }
@@ -600,15 +579,6 @@ export class ChatSessionManager implements OnModuleDestroy {
       execId: session.execId,
       interactionQueryId: session.interactionQueryId,
       todos: [...session.todos],
-      webDocuments: Array.from(session.webDocuments.values()).map(
-        (document) => ({
-          url: document.url,
-          title: document.title,
-          contentType: document.contentType,
-          chunks: [...document.chunks],
-          createdAt: this.toTimestamp(document.createdAt),
-        })
-      ),
       subAgentContext: session.subAgentContext
         ? {
             parentToolCallId: session.subAgentContext.parentToolCallId,
@@ -804,20 +774,6 @@ export class ChatSessionManager implements OnModuleDestroy {
         typeof persisted.interactionQueryId === "number"
           ? persisted.interactionQueryId
           : 0,
-      webDocuments: new Map(
-        Array.isArray(persisted.webDocuments)
-          ? persisted.webDocuments.map((document) => [
-              document.url,
-              {
-                url: document.url,
-                title: document.title,
-                contentType: document.contentType,
-                chunks: Array.isArray(document.chunks) ? document.chunks : [],
-                createdAt: new Date(this.toTimestamp(document.createdAt)),
-              },
-            ])
-          : []
-      ),
       todos: Array.isArray(persisted.todos) ? persisted.todos : [],
       subAgentContext: undefined,
       restartRecovery: this.buildRestartRecovery(persisted),
@@ -859,7 +815,6 @@ export class ChatSessionManager implements OnModuleDestroy {
       execId: 1,
       pendingInteractionQueries: new Map(),
       interactionQueryId: 0,
-      webDocuments: new Map(),
       todos: [],
       restartRecovery: undefined,
     }
@@ -1545,26 +1500,6 @@ export class ChatSessionManager implements OnModuleDestroy {
     const session = this.getSession(conversationId)
     if (!session) return
     session.todos = todos
-    session.lastActivityAt = new Date()
-    this.schedulePersist(conversationId)
-  }
-
-  setWebDocument(
-    conversationId: string,
-    url: string,
-    document: {
-      url: string
-      title: string
-      contentType: string
-      chunks: string[]
-      createdAt: Date
-    }
-  ): void {
-    const session = this.getSession(conversationId)
-    if (!session) {
-      throw new Error(`Session not found: ${conversationId}`)
-    }
-    session.webDocuments.set(url, document)
     session.lastActivityAt = new Date()
     this.schedulePersist(conversationId)
   }

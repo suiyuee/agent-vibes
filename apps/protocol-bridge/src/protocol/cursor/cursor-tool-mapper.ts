@@ -191,7 +191,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2: {
     name: "run_terminal_command",
-    description: "Run a command in the terminal",
+    description:
+      "Run a command in the terminal. Prefer read_file, list_directory, grep_search, and edit_file_v2 for code inspection or file edits; use this when the user explicitly wants command execution or no structured tool fits.",
     input_schema: {
       type: "object",
       properties: {
@@ -830,46 +831,6 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
     },
   },
 
-  search_web: {
-    name: "search_web",
-    description: "Search the web for information",
-    input_schema: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "The search query" },
-      },
-      required: ["query"],
-    },
-  },
-
-  read_url_content: {
-    name: "read_url_content",
-    description: "Read URL content and return chunk index summaries",
-    input_schema: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "The URL to read" },
-      },
-      required: ["url"],
-    },
-  },
-
-  view_content_chunk: {
-    name: "view_content_chunk",
-    description: "Read a specific chunk from a previously indexed URL",
-    input_schema: {
-      type: "object",
-      properties: {
-        document_id: {
-          type: "string",
-          description: "Document id returned by read_url_content",
-        },
-        position: { type: "number", description: "Chunk position" },
-      },
-      required: ["document_id", "position"],
-    },
-  },
-
   CLIENT_SIDE_TOOL_V2_BACKGROUND_SHELL_SPAWN: {
     name: "background_shell_spawn",
     description: "Spawn a long-running background process",
@@ -990,10 +951,7 @@ const PREFERRED_CURSOR_KEY_BY_TOOL_NAME: Record<string, string> = {
   switch_mode: "CLIENT_SIDE_TOOL_V2_SWITCH_MODE",
   mcp_tool: "CLIENT_SIDE_TOOL_V2_CALL_MCP_TOOL",
   web_search: "CLIENT_SIDE_TOOL_V2_WEB_SEARCH",
-  search_web: "search_web",
   web_fetch: "CLIENT_SIDE_TOOL_V2_WEB_FETCH",
-  read_url_content: "read_url_content",
-  view_content_chunk: "view_content_chunk",
   exa_search: "CLIENT_SIDE_TOOL_V2_EXA_SEARCH",
   exa_fetch: "CLIENT_SIDE_TOOL_V2_EXA_FETCH",
   setup_vm_environment: "CLIENT_SIDE_TOOL_V2_SETUP_VM_ENVIRONMENT",
@@ -1068,10 +1026,7 @@ const TOOL_KEY_ALIASES: Record<string, string> = {
   client_side_tool_v2_setup_vm_environment:
     "CLIENT_SIDE_TOOL_V2_SETUP_VM_ENVIRONMENT",
   web_search: "CLIENT_SIDE_TOOL_V2_WEB_SEARCH",
-  search_web: "search_web",
   web_fetch: "CLIENT_SIDE_TOOL_V2_WEB_FETCH",
-  read_url_content: "read_url_content",
-  view_content_chunk: "view_content_chunk",
   ask_question: "CLIENT_SIDE_TOOL_V2_ASK_QUESTION",
   create_plan: "CLIENT_SIDE_TOOL_V2_CREATE_PLAN",
   switch_mode: "CLIENT_SIDE_TOOL_V2_SWITCH_MODE",
@@ -1109,6 +1064,71 @@ const TOOL_KEY_ALIASES: Record<string, string> = {
   start_grind_planning: "CLIENT_SIDE_TOOL_V2_START_GRIND_PLANNING",
 }
 
+const DEFAULT_AGENT_BUILTIN_CURSOR_TOOLS = [
+  "CLIENT_SIDE_TOOL_V2_READ_FILE_V2",
+  "CLIENT_SIDE_TOOL_V2_LIST_DIR_V2",
+  "CLIENT_SIDE_TOOL_V2_RIPGREP_RAW_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_FILE_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_GLOB_FILE_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_SEMANTIC_SEARCH_FULL",
+  "CLIENT_SIDE_TOOL_V2_DEEP_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_EDIT_FILE_V2",
+  "CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2",
+  "CLIENT_SIDE_TOOL_V2_DELETE_FILE",
+  "CLIENT_SIDE_TOOL_V2_READ_LINTS",
+  "CLIENT_SIDE_TOOL_V2_FETCH_RULES",
+  "CLIENT_SIDE_TOOL_V2_SEARCH_SYMBOLS",
+  "CLIENT_SIDE_TOOL_V2_GO_TO_DEFINITION",
+  "CLIENT_SIDE_TOOL_V2_READ_PROJECT",
+  "CLIENT_SIDE_TOOL_V2_TASK_V2",
+  "CLIENT_SIDE_TOOL_V2_AWAIT_TASK",
+  "CLIENT_SIDE_TOOL_V2_TODO_READ",
+  "CLIENT_SIDE_TOOL_V2_TODO_WRITE",
+  "CLIENT_SIDE_TOOL_V2_ASK_QUESTION",
+  "CLIENT_SIDE_TOOL_V2_CREATE_PLAN",
+  "CLIENT_SIDE_TOOL_V2_SWITCH_MODE",
+  "CLIENT_SIDE_TOOL_V2_LIST_MCP_RESOURCES",
+  "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE",
+  "CLIENT_SIDE_TOOL_V2_CALL_MCP_TOOL",
+  "CLIENT_SIDE_TOOL_V2_BACKGROUND_SHELL_SPAWN",
+  "CLIENT_SIDE_TOOL_V2_WRITE_SHELL_STDIN",
+  "CLIENT_SIDE_TOOL_V2_FETCH",
+  "CLIENT_SIDE_TOOL_V2_RECORD_SCREEN",
+  "CLIENT_SIDE_TOOL_V2_COMPUTER_USE",
+  "CLIENT_SIDE_TOOL_V2_REFLECT",
+  "CLIENT_SIDE_TOOL_V2_APPLY_AGENT_DIFF",
+  "CLIENT_SIDE_TOOL_V2_REAPPLY",
+  "CLIENT_SIDE_TOOL_V2_FIX_LINTS",
+  "CLIENT_SIDE_TOOL_V2_READ_SEMSEARCH_FILES",
+  "CLIENT_SIDE_TOOL_V2_BACKGROUND_COMPOSER_FOLLOWUP",
+  "CLIENT_SIDE_TOOL_V2_KNOWLEDGE_BASE",
+  "CLIENT_SIDE_TOOL_V2_FETCH_PULL_REQUEST",
+  "CLIENT_SIDE_TOOL_V2_CREATE_DIAGRAM",
+  "CLIENT_SIDE_TOOL_V2_UPDATE_PROJECT",
+  "CLIENT_SIDE_TOOL_V2_SETUP_VM_ENVIRONMENT",
+  "CLIENT_SIDE_TOOL_V2_GENERATE_IMAGE",
+  "CLIENT_SIDE_TOOL_V2_REPORT_BUGFIX_RESULTS",
+  "CLIENT_SIDE_TOOL_V2_START_GRIND_EXECUTION",
+  "CLIENT_SIDE_TOOL_V2_START_GRIND_PLANNING",
+  "CLIENT_SIDE_TOOL_V2_EXA_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_EXA_FETCH",
+  "CLIENT_SIDE_TOOL_V2_WEB_SEARCH",
+  "CLIENT_SIDE_TOOL_V2_WEB_FETCH",
+] as const
+
+const BUILTIN_WEB_SEARCH_TOOL_KEYS = new Set<string>([
+  "CLIENT_SIDE_TOOL_V2_WEB_SEARCH",
+])
+
+const BUILTIN_WEB_FETCH_TOOL_KEYS = new Set<string>([
+  "CLIENT_SIDE_TOOL_V2_WEB_FETCH",
+])
+
+const BUILTIN_LINT_TOOL_KEYS = new Set<string>([
+  "CLIENT_SIDE_TOOL_V2_DIAGNOSTICS",
+  "CLIENT_SIDE_TOOL_V2_READ_LINTS",
+])
+
 function normalizeToolIdentifier(raw: string): string {
   return raw
     .trim()
@@ -1119,14 +1139,14 @@ function normalizeToolIdentifier(raw: string): string {
 function resolveToolDefinitionKey(rawTool: string): string | undefined {
   if (!rawTool) return undefined
 
-  if (CURSOR_TOOL_DEFINITIONS[rawTool]) {
-    return rawTool
-  }
-
   const normalized = normalizeToolIdentifier(rawTool)
   const alias = TOOL_KEY_ALIASES[normalized]
   if (alias && CURSOR_TOOL_DEFINITIONS[alias]) {
     return alias
+  }
+
+  if (CURSOR_TOOL_DEFINITIONS[rawTool]) {
+    return rawTool
   }
 
   for (const [key, definition] of Object.entries(CURSOR_TOOL_DEFINITIONS)) {
@@ -1197,6 +1217,37 @@ export function getAvailableTools(): string[] {
   return Object.keys(CURSOR_TOOL_DEFINITIONS)
 }
 
+function shouldIncludeBuiltInTool(
+  definitionKey: string,
+  options?: CursorBuiltInToolCapabilityOptions
+): boolean {
+  const hasExplicitWebCapability =
+    options?.webSearchEnabled !== undefined ||
+    options?.webFetchEnabled !== undefined
+
+  if (BUILTIN_WEB_SEARCH_TOOL_KEYS.has(definitionKey)) {
+    return hasExplicitWebCapability ? options?.webSearchEnabled === true : true
+  }
+
+  if (BUILTIN_WEB_FETCH_TOOL_KEYS.has(definitionKey)) {
+    return hasExplicitWebCapability ? options?.webFetchEnabled === true : true
+  }
+
+  if (BUILTIN_LINT_TOOL_KEYS.has(definitionKey)) {
+    if (options?.readLintsEnabled === false) return false
+  }
+
+  return true
+}
+
+export function getDefaultAgentToolNames(
+  options?: CursorBuiltInToolCapabilityOptions
+): string[] {
+  return DEFAULT_AGENT_BUILTIN_CURSOR_TOOLS.filter((toolName) =>
+    shouldIncludeBuiltInTool(toolName, options)
+  )
+}
+
 // ToolDefinition format compatible with CreateMessageDto
 export interface McpToolDefinitionForApi {
   name: string
@@ -1208,6 +1259,12 @@ export interface McpToolDefinitionForApi {
 
 export interface BuildToolsForApiOptions {
   mcpToolDefs?: McpToolDefinitionForApi[]
+}
+
+export interface CursorBuiltInToolCapabilityOptions {
+  webSearchEnabled?: boolean
+  webFetchEnabled?: boolean
+  readLintsEnabled?: boolean
 }
 
 export interface ToolDefinition {
@@ -1312,9 +1369,6 @@ export function buildToolsForApi(
     "CLIENT_SIDE_TOOL_V2_SEMANTIC_SEARCH_FULL",
     "CLIENT_SIDE_TOOL_V2_DEEP_SEARCH",
     "CLIENT_SIDE_TOOL_V2_GLOB_FILE_SEARCH",
-    "search_web",
-    "read_url_content",
-    "view_content_chunk",
   ])
   const seenDefinitionKeys = new Set<string>()
   const seenToolNames = new Set<string>()
@@ -1387,16 +1441,10 @@ export function buildToolsForApi(
 /**
  * Get default tools for agent mode (when supportedTools is empty)
  */
-export function getDefaultAgentTools(): AnthropicTool[] {
-  // Return core tools for agent mode
-  const coreTools = [
-    "CLIENT_SIDE_TOOL_V2_READ_FILE_V2",
-    "CLIENT_SIDE_TOOL_V2_LIST_DIR_V2",
-    "CLIENT_SIDE_TOOL_V2_RIPGREP_RAW_SEARCH",
-    "CLIENT_SIDE_TOOL_V2_FILE_SEARCH",
-    "CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2",
-  ]
-  return mapCursorToolsToAnthropic(coreTools)
+export function getDefaultAgentTools(
+  options?: CursorBuiltInToolCapabilityOptions
+): AnthropicTool[] {
+  return mapCursorToolsToAnthropic(getDefaultAgentToolNames(options))
 }
 
 /**
@@ -1455,9 +1503,6 @@ export function getToolTypeEnumValue(toolName: string): number {
     CLIENT_SIDE_TOOL_V2_READ_LINTS: 30,
     CLIENT_SIDE_TOOL_V2_TODO_READ: 34,
     CLIENT_SIDE_TOOL_V2_TODO_WRITE: 35,
-    search_web: 18,
-    read_url_content: 57,
-    view_content_chunk: 57,
   }
 
   // 1. Direct match on tool name

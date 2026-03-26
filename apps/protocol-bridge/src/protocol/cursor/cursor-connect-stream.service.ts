@@ -337,14 +337,6 @@ interface JsonSchemaProperty {
   [key: string]: unknown
 }
 
-interface WebDocumentRecord {
-  url: string
-  title: string
-  contentType: string
-  chunks: string[]
-  createdAt: Date
-}
-
 // ToolDefinition type imported from cursor-tool-mapper.ts
 
 /**
@@ -1364,22 +1356,10 @@ ${raw}
       .replace(/^_+|_+$/g, "")
     const compact = toolName.toLowerCase().replace(/[^a-z0-9]+/g, "")
 
-    if (
-      snake.includes("web_search") ||
-      snake === "search_web" ||
-      compact.includes("websearch") ||
-      compact === "searchweb"
-    ) {
+    if (snake.includes("web_search") || compact.includes("websearch")) {
       return "web_search"
     }
-    if (
-      snake.includes("web_fetch") ||
-      snake === "read_url_content" ||
-      snake === "view_content_chunk" ||
-      compact.includes("webfetch") ||
-      compact === "readurlcontent" ||
-      compact === "viewcontentchunk"
-    ) {
+    if (snake.includes("web_fetch") || compact.includes("webfetch")) {
       return "web_fetch"
     }
     return undefined
@@ -1395,11 +1375,8 @@ ${raw}
     if (definitionKey) {
       switch (definitionKey) {
         case "CLIENT_SIDE_TOOL_V2_WEB_SEARCH":
-        case "search_web":
           return "web_search"
         case "CLIENT_SIDE_TOOL_V2_WEB_FETCH":
-        case "read_url_content":
-        case "view_content_chunk":
           return "web_fetch"
         case "CLIENT_SIDE_TOOL_V2_FETCH":
           return "fetch"
@@ -2039,51 +2016,6 @@ ${raw}
     return toolName.toLowerCase().replace(/[^a-z0-9_]+/g, "_")
   }
 
-  private isReadUrlContentTool(toolName: string): boolean {
-    return this.normalizeToolToken(toolName) === "read_url_content"
-  }
-
-  private isViewContentChunkTool(toolName: string): boolean {
-    return this.normalizeToolToken(toolName) === "view_content_chunk"
-  }
-
-  private buildWebDocumentChunks(content: string): string[] {
-    const normalized = content.replace(/\r\n/g, "\n").trim()
-    if (!normalized) return []
-
-    const targetSize = 2200
-    const hardLimit = 2800
-    const lines = normalized.split("\n")
-    const chunks: string[] = []
-    let current = ""
-
-    for (const line of lines) {
-      const next = current.length === 0 ? line : `${current}\n${line}`
-      if (next.length <= targetSize) {
-        current = next
-        continue
-      }
-
-      if (current.length > 0) {
-        chunks.push(current)
-        current = line
-        continue
-      }
-
-      // Single very long line fallback.
-      let cursor = 0
-      while (cursor < line.length) {
-        chunks.push(line.slice(cursor, cursor + hardLimit))
-        cursor += hardLimit
-      }
-    }
-
-    if (current.length > 0) {
-      chunks.push(current)
-    }
-    return chunks
-  }
-
   private pickFirstString(
     source: Record<string, unknown>,
     keys: string[]
@@ -2415,21 +2347,6 @@ ${raw}
     }
   }
 
-  private getOrCreateWebDocument(
-    conversationId: string,
-    url: string
-  ): WebDocumentRecord {
-    const session = this.sessionManager.getSession(conversationId)
-    if (!session) {
-      throw new Error(`Session not found: ${conversationId}`)
-    }
-    const existing = session.webDocuments.get(url)
-    if (existing) {
-      return existing
-    }
-    throw new Error(`Document not found in cache: ${url}`)
-  }
-
   private async executeInlineWebTool(
     conversationId: string,
     toolName: string,
@@ -2491,103 +2408,6 @@ ${raw}
         const message = error instanceof Error ? error.message : String(error)
         return {
           content: `[web_search error] ${message}`,
-          state: { status: "error", message },
-        }
-      }
-    }
-
-    if (this.isViewContentChunkTool(toolName)) {
-      const documentId =
-        this.pickFirstString(input, [
-          "document_id",
-          "documentId",
-          "url",
-          "Url",
-        ]) || ""
-      const position =
-        this.pickFirstNumber(input, ["position", "chunk_position"]) ?? 0
-
-      if (!documentId) {
-        return {
-          content: "[view_content_chunk error] Missing document_id",
-          state: { status: "error", message: "missing document_id" },
-        }
-      }
-
-      try {
-        const doc = this.getOrCreateWebDocument(conversationId, documentId)
-        if (!doc.chunks[position]) {
-          return {
-            content: `[view_content_chunk error] Invalid position ${position}, available range: 0-${Math.max(0, doc.chunks.length - 1)}`,
-            state: { status: "error", message: "invalid chunk position" },
-          }
-        }
-
-        const chunk = doc.chunks[position]
-        return {
-          content: `Step Id: 0\nChunk content at position ${position}:\n${chunk}`,
-          state: { status: "success" },
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return {
-          content: `[view_content_chunk error] ${message}`,
-          state: { status: "error", message },
-        }
-      }
-    }
-
-    if (this.isReadUrlContentTool(toolName)) {
-      const url =
-        this.pickFirstString(input, [
-          "url",
-          "Url",
-          "document_id",
-          "documentId",
-        ]) || ""
-      if (!url) {
-        return {
-          content: "[read_url_content error] Missing required url parameter",
-          state: {
-            status: "error",
-            message: "missing url",
-          },
-        }
-      }
-
-      try {
-        const doc = await this.fetchUrlDocument(url)
-        const chunks = this.buildWebDocumentChunks(doc.content)
-        this.sessionManager.setWebDocument(conversationId, url, {
-          url,
-          title: doc.title,
-          contentType: doc.contentType,
-          chunks,
-          createdAt: new Date(),
-        })
-
-        const lines = chunks.slice(0, 40).map((chunk, index) => {
-          const compact = chunk.replace(/\s+/g, " ").slice(0, 120)
-          return `- [Position: ${index}] ${compact}`
-        })
-        const summaryLines =
-          lines.length > 0
-            ? lines.join("\n")
-            : "- [Position: 0] (empty content)"
-        const title = doc.title || url
-
-        return {
-          content:
-            `Step Id: 0\nTitle: ${title}\n\n` +
-            `The article at ${url} contains the following chunks with associated positions and summaries:\n` +
-            `${summaryLines}\n\n` +
-            `Use view_content_chunk with document_id = ${url} and position = <index> to read details.`,
-          state: { status: "success" },
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        return {
-          content: `[read_url_content error] ${message}`,
           state: { status: "error", message },
         }
       }
@@ -5264,22 +5084,6 @@ ${raw}
       }
     }
 
-    if (family === "web_fetch" && this.isViewContentChunkTool(toolName)) {
-      const result = await this.executeDeferredTool(
-        conversationId,
-        family,
-        toolName,
-        input
-      )
-      yield* this.emitInlineToolResult(
-        conversationId,
-        toolCallId,
-        result.content,
-        result.state
-      )
-      return true
-    }
-
     if (!this.shouldUseInteractionQueryForDeferredTool(family)) {
       const result = await this.executeDeferredTool(
         conversationId,
@@ -6277,10 +6081,12 @@ ${raw}
         `Using ${toolsToUse.length} tools from session: ${toolsToUse.join(", ")}`
       )
     } else {
-      // Strict protocol mode: do not silently inject fallback tools.
+      // Parser should already reconstruct official built-in capability set.
+      // Reaching an empty tool list here usually indicates a malformed or
+      // unsupported client payload, so keep the list empty and log loudly.
       toolsToUse = []
       this.logger.warn(
-        "No supportedTools in request or session; continuing with empty tool list in strict mode"
+        "No supportedTools in request or session after parser capability reconstruction; continuing with empty tool list"
       )
     }
 

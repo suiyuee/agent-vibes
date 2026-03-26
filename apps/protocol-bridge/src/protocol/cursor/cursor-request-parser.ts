@@ -14,41 +14,10 @@ import {
   type RequestedModel_ModelParameterValue,
   UserMessage,
 } from "../../gen/agent/v1_pb"
-import { getAvailableTools } from "./cursor-tool-mapper"
+import { getDefaultAgentToolNames } from "./cursor-tool-mapper"
 
 // GZIP 魔数
 const GZIP_MAGIC = Buffer.from([0x1f, 0x8b])
-
-function isBuiltInCursorToolName(toolName: string): boolean {
-  const normalized = toolName.trim().toLowerCase()
-  if (!normalized) return false
-  return (
-    normalized.startsWith("client_side_tool_v2_") ||
-    normalized === "search_web" ||
-    normalized === "read_url_content" ||
-    normalized === "view_content_chunk"
-  )
-}
-
-function isWebCapabilityToolName(toolName: string): boolean {
-  const normalized = toolName.trim().toLowerCase()
-  if (!normalized) return false
-  return (
-    normalized === "client_side_tool_v2_web_search" ||
-    normalized === "client_side_tool_v2_web_fetch" ||
-    normalized === "search_web" ||
-    normalized === "read_url_content" ||
-    normalized === "view_content_chunk" ||
-    normalized === "web_search" ||
-    normalized === "web_fetch"
-  )
-}
-
-// Fallback to the full known built-in tool catalog when Cursor payload
-// omits built-in tools and carries only MCP definitions.
-const FALLBACK_BUILTIN_CURSOR_TOOLS = getAvailableTools().filter((toolName) =>
-  isBuiltInCursorToolName(toolName)
-)
 
 // 已解析的 tool 结果
 export interface ParsedToolResult {
@@ -255,11 +224,6 @@ export class CursorRequestParser {
   private readonly logger = new Logger(CursorRequestParser.name)
 
   private readonly textDecoder = new TextDecoder()
-  private readonly fallbackBuiltInAgentTools = FALLBACK_BUILTIN_CURSOR_TOOLS
-
-  private isBuiltInCursorToolName(toolName: string): boolean {
-    return isBuiltInCursorToolName(toolName)
-  }
 
   /**
    * Convert a protobuf google.protobuf.Value to plain JS value.
@@ -888,9 +852,18 @@ export class CursorRequestParser {
     }
 
     // 提取支持的工具
-    // NOTE: proto 中 RequestContext.tools 的类型是 McpToolDefinition，
-    // 这里先收集 MCP 工具名，再与 customSubagents[].tools 合并。
-    const supportedToolsSet = new Set<string>()
+    // MCP tools are request-scoped dynamic definitions. Built-in Cursor tools are
+    // protocol/runtime capabilities and should be reconstructed from known
+    // built-in catalog plus request capability flags rather than inferred from
+    // requestContext.tools (which only carries MCP definitions).
+    const supportedToolsSet = new Set<string>(
+      getDefaultAgentToolNames({
+        webSearchEnabled: requestContext?.webSearchEnabled,
+        webFetchEnabled: requestContext?.webFetchEnabled,
+        readLintsEnabled: requestContext?.readLintsEnabled,
+      })
+    )
+
     const appendDeclaredMcpToolName = (tool: {
       name?: string
       toolName?: string
@@ -914,69 +887,6 @@ export class CursorRequestParser {
     if (req.mcpTools?.mcpTools?.length) {
       for (const tool of req.mcpTools.mcpTools) {
         appendDeclaredMcpToolName(tool)
-      }
-    }
-
-    // Some Cursor builds include tool names under customSubagents[].tools.
-    if (requestContext?.customSubagents?.length) {
-      for (const subagent of requestContext.customSubagents) {
-        if (!subagent.tools?.length) continue
-        for (const toolName of subagent.tools) {
-          if (toolName) {
-            supportedToolsSet.add(toolName)
-          }
-        }
-      }
-    }
-
-    const hasBuiltInCursorTools = Array.from(supportedToolsSet).some((name) =>
-      this.isBuiltInCursorToolName(name)
-    )
-    const hasExplicitCustomSubagentToolSelection =
-      requestContext?.customSubagents?.some(
-        (subagent) => !!subagent.tools?.length
-      ) ?? false
-
-    // Some Agent payloads carry only MCP tool definitions in requestContext.tools.
-    // Without core local tools, model may incorrectly route local file mentions to MCP.
-    if (!hasBuiltInCursorTools && !hasExplicitCustomSubagentToolSelection) {
-      const merged = new Set<string>()
-      for (const toolName of this.fallbackBuiltInAgentTools) {
-        merged.add(toolName)
-      }
-      for (const toolName of supportedToolsSet) {
-        merged.add(toolName)
-      }
-      supportedToolsSet.clear()
-      for (const toolName of merged) {
-        supportedToolsSet.add(toolName)
-      }
-      const fallbackPreview = this.fallbackBuiltInAgentTools
-        .slice(0, 10)
-        .join(", ")
-      this.logger.warn(
-        `No built-in Cursor tools found in request context; injected fallback built-in tool catalog ` +
-          `(${this.fallbackBuiltInAgentTools.length} tools, preview: ${fallbackPreview}${this.fallbackBuiltInAgentTools.length > 10 ? ", ..." : ""})`
-      )
-    }
-
-    const hasExplicitWebCapabilityFlags =
-      requestContext?.webSearchEnabled !== undefined ||
-      requestContext?.webFetchEnabled !== undefined
-    const webCapabilityEnabled =
-      requestContext?.webSearchEnabled === true ||
-      requestContext?.webFetchEnabled === true
-    if (hasExplicitWebCapabilityFlags && !webCapabilityEnabled) {
-      let removed = 0
-      for (const toolName of Array.from(supportedToolsSet)) {
-        if (!isWebCapabilityToolName(toolName)) continue
-        supportedToolsSet.delete(toolName)
-        removed++
-      }
-      if (removed > 0) {
-        this.logger.log(
-          `Web capability disabled by request context; removed ${removed} web tool(s) from supportedTools`
-        )
       }
     }
 
@@ -1047,19 +957,20 @@ export class CursorRequestParser {
     // - modelDetails.thinkingDetails 存在（presence）→ thinking 已启用
     // - modelDetails.maxMode 或 requestedModel.maxMode → 最大 thinking
     // - 模型名含 "thinking" → 标准 thinking
+    const hasThinkingDetails = !!req.modelDetails?.thinkingDetails
+    const modelMaxMode = req.modelDetails?.maxMode === true
+    const requestedMaxMode = req.requestedModel?.maxMode === true
     let thinkingLevel = 0
-    if (req.modelDetails?.thinkingDetails) {
-      thinkingLevel = req.modelDetails?.maxMode ? 2 : 1
-    } else if (req.requestedModel?.maxMode) {
-      thinkingLevel = 2
+    if (hasThinkingDetails || modelMaxMode || requestedMaxMode) {
+      thinkingLevel = modelMaxMode || requestedMaxMode ? 2 : 1
     } else if (model.toLowerCase().includes("thinking")) {
       thinkingLevel = 1
     }
 
     if (thinkingLevel > 0) {
       this.logger.log(
-        `Thinking enabled: level=${thinkingLevel} (thinkingDetails=${!!req.modelDetails?.thinkingDetails}, ` +
-          `maxMode=${req.modelDetails?.maxMode || req.requestedModel?.maxMode || false})`
+        `Thinking enabled: level=${thinkingLevel} (thinkingDetails=${hasThinkingDetails}, ` +
+          `modelMaxMode=${modelMaxMode}, requestedMaxMode=${requestedMaxMode})`
       )
     }
 
