@@ -86,6 +86,17 @@ export class ModelRouterService {
     this.logger.log("========================")
   }
 
+  /** Backend availability getters for startup banner */
+  get isGoogleAvailable(): boolean {
+    return this.googleAvailable
+  }
+  get isCodexAvailable(): boolean {
+    return this.codexAvailable
+  }
+  get isOpenaiCompatAvailable(): boolean {
+    return this.openaiCompatAvailable
+  }
+
   /**
    * Resolve model to appropriate backend.
    * Uses unified model-registry for all name resolution.

@@ -14,6 +14,7 @@ import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger"
 import * as fs from "fs"
 import * as path from "path"
 import { AppModule } from "./app.module"
+import { ModelRouterService } from "./llm/model-router.service"
 import { registerContentTypeParsers } from "./shared/content-type-parsers"
 import { registerRequestHooks } from "./shared/request-hooks"
 
@@ -213,6 +214,7 @@ async function bootstrap() {
     purple: "\x1b[38;2;162;89;255m", // #A259FF
     blue: "\x1b[38;2;26;188;254m", // #1ABCFE
     green: "\x1b[38;2;10;207;131m", // #0ACF83
+    yellow: "\x1b[38;2;255;199;0m", // #FFC700
   }
   const W = 62 // inner width (between ║ chars)
   // eslint-disable-next-line no-control-regex
@@ -226,29 +228,35 @@ async function bootstrap() {
 
   const serverUrl = `${protocol}://localhost:${port}`
 
-  // Funny Vibes ASCII Art Logo (design-vibes brand colors)
+  // Funny Vibes ASCII Art Logo (medium size)
   const logo = [
-    `${c.bold}${c.red} ███████╗${c.orange}██╗   ██╗${c.red}███╗   ██╗${c.orange}███╗   ██╗${c.red}██╗   ██╗${c.reset}`,
-    `${c.bold}${c.red} ██╔════╝${c.orange}██║   ██║${c.red}████╗  ██║${c.orange}████╗  ██║${c.red}╚██╗ ██╔╝${c.reset}`,
-    `${c.bold}${c.red} █████╗  ${c.orange}██║   ██║${c.red}██╔██╗ ██║${c.orange}██╔██╗ ██║${c.red} ╚████╔╝ ${c.reset}`,
-    `${c.bold}${c.red} ██╔══╝  ${c.orange}██║   ██║${c.red}██║╚██╗██║${c.orange}██║╚██╗██║${c.red}  ╚██╔╝  ${c.reset}`,
-    `${c.bold}${c.red} ██║     ${c.orange}╚██████╔╝${c.red}██║ ╚████║${c.orange}██║ ╚████║${c.red}   ██║   ${c.reset}`,
-    `${c.bold}${c.red} ╚═╝     ${c.orange} ╚═════╝ ${c.red}╚═╝  ╚═══╝${c.orange}╚═╝  ╚═══╝${c.red}   ╚═╝   ${c.reset}`,
-    `${c.bold}${c.blue}      ██╗   ██╗${c.green}██╗${c.blue}██████╗ ${c.green}███████╗${c.blue}███████╗${c.reset}`,
-    `${c.bold}${c.blue}      ██║   ██║${c.green}██║${c.blue}██╔══██╗${c.green}██╔════╝${c.blue}██╔════╝${c.reset}`,
-    `${c.bold}${c.blue}      ██║   ██║${c.green}██║${c.blue}██████╔╝${c.green}█████╗  ${c.blue}███████╗${c.reset}`,
-    `${c.bold}${c.blue}      ╚██╗ ██╔╝${c.green}██║${c.blue}██╔══██╗${c.green}██╔══╝  ${c.blue}╚════██║${c.reset}`,
-    `${c.bold}${c.blue}       ╚████╔╝ ${c.green}██║${c.blue}██████╔╝${c.green}███████╗${c.blue}███████║${c.reset}`,
-    `${c.bold}${c.blue}        ╚═══╝  ${c.green}╚═╝${c.blue}╚═════╝ ${c.green}╚══════╝${c.blue}╚══════╝${c.reset}`,
+    `${c.bold}${c.red} ██▀▀▀ ${c.orange}█  █ ${c.red}█▄  █ ${c.orange}█▄  █ ${c.red}█  █${c.reset}   ${c.bold}${c.blue}█  █ ${c.green}█ ${c.blue}██▀▀▄ ${c.green}██▀▀▀ ${c.blue}██▀▀▀${c.reset}`,
+    `${c.bold}${c.red} █▀▀   ${c.orange}█  █ ${c.red}█ █ █ ${c.orange}█ █ █ ${c.red} ▀▀█${c.reset}   ${c.bold}${c.blue}▀▄▄▀ ${c.green}█ ${c.blue}█▀▀▄  ${c.green}█▀▀   ${c.blue}▀▀▀█${c.reset}`,
+    `${c.bold}${c.red} ▀    ${c.orange}▀▀▀▀ ${c.red}▀  ▀▀ ${c.orange}▀  ▀▀ ${c.red}  ▀${c.reset}    ${c.bold}${c.blue} ▀▀  ${c.green}▀ ${c.blue}▀▀▀   ${c.green}▀▀▀▀  ${c.blue}▀▀▀▀${c.reset}`,
   ]
 
+  // Get backend availability from ModelRouterService
+  const modelRouter = app.get(ModelRouterService)
+  const ok = `${c.green}✓${c.reset}`
+  const no = `${c.red}✗${c.reset}`
+
+  const googleStatus = modelRouter.isGoogleAvailable ? ok : no
+  const openaiCompatStatus = modelRouter.isOpenaiCompatAvailable ? ok : no
+  const codexStatus = modelRouter.isCodexAvailable ? ok : no
+
+  // Determine GPT routing target
+  let gptRoute = `${c.red}NOT CONFIGURED${c.reset}`
+  if (modelRouter.isOpenaiCompatAvailable) {
+    gptRoute = `${c.green}OpenAI-Compat${c.reset}`
+  } else if (modelRouter.isCodexAvailable) {
+    gptRoute = `${c.green}Codex${c.reset}`
+  }
+
   console.log(`
-${c.dim}${"─".repeat(64)}${c.reset}
 ${logo.join("\n")}
-${c.dim}${"─".repeat(64)}${c.reset}
 
 ${c.blue}╔${"═".repeat(W)}╗${c.reset}
-${c.blue}║${c.reset}${pad("", Math.floor((W - 28) / 2))}${c.bold}${c.blue}⚡ Agent Vibes Proxy Server ⚡${c.reset}${pad("", Math.ceil((W - 28) / 2) - 1)}${c.blue}║${c.reset}
+${c.blue}║${c.reset}${pad("", Math.floor((W - 30) / 2))}${c.bold}${c.blue}⚡ Agent Vibes Proxy Server ⚡${c.reset}${pad("", Math.ceil((W - 30) / 2))}${c.blue}║${c.reset}
 ${sep}
 ${empty}
 ${line(`${c.green}▸${c.reset} Server    ${c.bold}${c.green}${serverUrl}${c.reset}`)}
@@ -256,14 +264,22 @@ ${line(`${c.green}▸${c.reset} API Docs  ${c.bold}${c.green}${serverUrl}/docs${
 ${line(`${c.green}▸${c.reset} HTTP/2    ${c.bold}${c.white}${http2Status}${c.reset}`)}
 ${line(`${c.green}▸${c.reset} Mode      ${c.bold}${c.white}${isDebug ? "DEBUG (verbose + file log)" : "NORMAL (quiet)"}${c.reset}`)}
 ${empty}
-${line(`${c.orange}${c.bold}Anthropic API${c.reset} ${c.dim}(Claude Code CLI)${c.reset}`)}
+${sep}
+${line(`${c.yellow}${c.bold}Backends${c.reset}`)}
+${line(`  ${googleStatus} Google Cloud Code    ${c.dim}(Gemini + Claude)${c.reset}`)}
+${line(`  ${openaiCompatStatus} OpenAI-Compatible    ${c.dim}(${process.env.OPENAI_COMPAT_BASE_URL || "not set"})${c.reset}`)}
+${line(`  ${codexStatus} Codex (OpenAI)       ${c.dim}(GPT/O-series reverse proxy)${c.reset}`)}
+${empty}
+${sep}
+${line(`${c.yellow}${c.bold}Model Routing${c.reset}`)}
+${line(`  Gemini / Claude     ${c.dim}→${c.reset}  ${c.green}Google Cloud Code${c.reset}`)}
+${line(`  GPT / O-series      ${c.dim}→${c.reset}  ${gptRoute}`)}
+${empty}
+${sep}
+${line(`${c.orange}${c.bold}API Endpoints${c.reset}`)}
 ${line(`  ${c.purple}POST${c.reset} /v1/messages ${c.dim}·· Anthropic Messages API${c.reset}`)}
 ${line(`  ${c.purple}GET ${c.reset} /v1/models   ${c.dim}·· List available models${c.reset}`)}
-${empty}
-${line(`${c.orange}${c.bold}Cursor gRPC${c.reset}   ${c.dim}(Cursor IDE)${c.reset}`)}
-${line(`  ${c.purple}POST${c.reset} /agent.v1.*  ${c.dim}·· Agent mode endpoints${c.reset}`)}
-${empty}
-${line(`${c.orange}${c.bold}Health${c.reset}`)}
+${line(`  ${c.purple}POST${c.reset} /agent.v1.*  ${c.dim}·· Cursor gRPC endpoints${c.reset}`)}
 ${line(`  ${c.purple}GET ${c.reset} /health      ${c.dim}·· Health check${c.reset}`)}
 ${empty}
 ${c.blue}╚${"═".repeat(W)}╝${c.reset}
