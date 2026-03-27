@@ -138,6 +138,11 @@ function resolveOpenAiCompatReasoningEffort(dto: CreateMessageDto): string {
 const THINKING_OPEN_TAG = "<thinking>"
 const THINKING_CLOSE_TAG = "</thinking>"
 
+interface LeadingThinkingTaggedText {
+  thinking: string
+  remainder: string
+}
+
 export interface ThinkingTagStreamState {
   inThinking: boolean
   pending: string
@@ -240,40 +245,67 @@ export function flushThinkingTagTextDelta(
     : [{ type: "text", text: pending }]
 }
 
+function extractLeadingThinkingTaggedText(
+  text: string
+): LeadingThinkingTaggedText | null {
+  if (!text.startsWith(THINKING_OPEN_TAG)) {
+    return null
+  }
+
+  const closeIdx = text.indexOf(THINKING_CLOSE_TAG, THINKING_OPEN_TAG.length)
+  if (closeIdx === -1) {
+    return null
+  }
+
+  return {
+    thinking: text.slice(THINKING_OPEN_TAG.length, closeIdx),
+    remainder: text.slice(closeIdx + THINKING_CLOSE_TAG.length),
+  }
+}
+
+function stripLeadingThinkingTaggedText(text: string): string {
+  return extractLeadingThinkingTaggedText(text)?.remainder ?? text
+}
+
 export function splitThinkingTaggedText(text: string): ContentBlock[] {
   if (!text) return []
 
-  const state = createThinkingTagStreamState()
-  const events = [
-    ...consumeThinkingTagTextDelta(state, text),
-    ...flushThinkingTagTextDelta(state),
-  ]
   const blocks: ContentBlock[] = []
+  const leadingTaggedText = extractLeadingThinkingTaggedText(text)
 
-  for (const event of events) {
-    if (event.type === "thinking_end") continue
+  if (!leadingTaggedText) {
+    return [{ type: "text", text }]
+  }
 
-    const lastBlock = blocks[blocks.length - 1]
-    if (event.type === "text") {
-      if (lastBlock?.type === "text") {
-        lastBlock.text += event.text
-      } else {
-        blocks.push({ type: "text", text: event.text })
-      }
-      continue
-    }
-
-    if (lastBlock?.type === "thinking") {
-      lastBlock.thinking += event.text
-    } else {
-      blocks.push({ type: "thinking", thinking: event.text })
-    }
+  if (leadingTaggedText.thinking) {
+    blocks.push({ type: "thinking", thinking: leadingTaggedText.thinking })
+  }
+  if (leadingTaggedText.remainder) {
+    blocks.push({ type: "text", text: leadingTaggedText.remainder })
   }
 
   return blocks
 }
 
+function extractReasoningText(reasoning: unknown): string | null {
+  if (typeof reasoning === "string" && reasoning) {
+    return reasoning
+  }
+
+  if (
+    reasoning &&
+    typeof reasoning === "object" &&
+    typeof (reasoning as Record<string, unknown>).content === "string"
+  ) {
+    return (reasoning as Record<string, unknown>).content as string
+  }
+
+  return null
+}
+
 // ── Streaming state ────────────────────────────────────────────────────
+
+type LeadingTaggedContentState = "plain" | "detecting" | "suppressing"
 
 interface StreamState {
   blockIndex: number
@@ -284,10 +316,14 @@ interface StreamState {
   messageStartEmitted: boolean
   thinkingBlockActive: boolean
   textBlockActive: boolean
+  contentStarted: boolean
+  explicitReasoningSeen: boolean
+  leadingTaggedContentState: LeadingTaggedContentState
+  leadingTaggedContentBuffer: string
   thinkingTagState: ThinkingTagStreamState
 }
 
-function createStreamState(): StreamState {
+export function createStreamState(): StreamState {
   return {
     blockIndex: 0,
     hasToolCall: false,
@@ -297,6 +333,10 @@ function createStreamState(): StreamState {
     messageStartEmitted: false,
     thinkingBlockActive: false,
     textBlockActive: false,
+    contentStarted: false,
+    explicitReasoningSeen: false,
+    leadingTaggedContentState: "plain",
+    leadingTaggedContentBuffer: "",
     thinkingTagState: createThinkingTagStreamState(),
   }
 }
@@ -997,25 +1037,26 @@ export class OpenaiCompatService implements OnModuleInit {
     const content: ContentBlock[] = []
     let hasToolCall = false
 
-    const providerReasoning = message?.reasoning
-    if (typeof providerReasoning === "string" && providerReasoning) {
-      content.push({ type: "thinking", thinking: providerReasoning })
-    } else if (
-      providerReasoning &&
-      typeof providerReasoning === "object" &&
-      typeof (providerReasoning as Record<string, unknown>).content === "string"
-    ) {
-      content.push({
-        type: "thinking",
-        thinking: (providerReasoning as Record<string, unknown>)
-          .content as string,
-      })
+    const providerReasoningText = extractReasoningText(message?.reasoning)
+    if (providerReasoningText) {
+      content.push({ type: "thinking", thinking: providerReasoningText })
     }
 
-    // Text content, including providers that wrap reasoning in <thinking> tags.
+    // Some providers prefix visible content with a single tagged reasoning block.
+    // Only normalize a leading wrapper; treat any later <thinking> mentions as text.
     const text = message?.content as string
     if (text) {
-      content.push(...splitThinkingTaggedText(text))
+      const visibleText = providerReasoningText
+        ? stripLeadingThinkingTaggedText(text)
+        : null
+
+      if (visibleText !== null) {
+        if (visibleText) {
+          content.push({ type: "text", text: visibleText })
+        }
+      } else {
+        content.push(...splitThinkingTaggedText(text))
+      }
     }
 
     // Tool calls
@@ -1337,6 +1378,7 @@ export class OpenaiCompatService implements OnModuleInit {
       })
     )
 
+    state.contentStarted = true
     return results
   }
 
@@ -1372,57 +1414,118 @@ export class OpenaiCompatService implements OnModuleInit {
     state: StreamState,
     contentDelta: string
   ): string[] {
+    if (
+      state.explicitReasoningSeen &&
+      !state.contentStarted &&
+      state.leadingTaggedContentState !== "plain"
+    ) {
+      return this.consumeSuppressedLeadingTaggedContentDelta(
+        state,
+        contentDelta
+      )
+    }
+
+    state.leadingTaggedContentState = "plain"
+    state.leadingTaggedContentBuffer = ""
+    const results: string[] = []
+    if (state.thinkingBlockActive) {
+      results.push(...this.closeThinkingBlock(state))
+    }
+    results.push(...this.emitTextDelta(state, contentDelta))
+    return results
+  }
+
+  private consumeSuppressedLeadingTaggedContentDelta(
+    state: StreamState,
+    contentDelta: string
+  ): string[] {
+    const results: string[] = []
+
+    if (state.leadingTaggedContentState === "detecting") {
+      state.leadingTaggedContentBuffer += contentDelta
+      const buffered = state.leadingTaggedContentBuffer
+
+      if (THINKING_OPEN_TAG.startsWith(buffered)) {
+        return results
+      }
+
+      if (!buffered.startsWith(THINKING_OPEN_TAG)) {
+        state.leadingTaggedContentState = "plain"
+        state.leadingTaggedContentBuffer = ""
+        if (state.thinkingBlockActive) {
+          results.push(...this.closeThinkingBlock(state))
+        }
+        results.push(...this.emitTextDelta(state, buffered))
+        return results
+      }
+
+      state.leadingTaggedContentState = "suppressing"
+      return this.consumeSuppressedLeadingTaggedContentEvents(state, buffered)
+    }
+
+    if (state.leadingTaggedContentState !== "suppressing") {
+      if (state.thinkingBlockActive) {
+        results.push(...this.closeThinkingBlock(state))
+      }
+      results.push(...this.emitTextDelta(state, contentDelta))
+      return results
+    }
+
+    state.leadingTaggedContentBuffer += contentDelta
+    return this.consumeSuppressedLeadingTaggedContentEvents(state, contentDelta)
+  }
+
+  private consumeSuppressedLeadingTaggedContentEvents(
+    state: StreamState,
+    contentDelta: string
+  ): string[] {
     const results: string[] = []
 
     for (const event of consumeThinkingTagTextDelta(
       state.thinkingTagState,
       contentDelta
     )) {
-      if (event.type === "text") {
-        if (state.thinkingBlockActive) {
-          results.push(...this.closeThinkingBlock(state))
-        }
-        results.push(...this.emitTextDelta(state, event.text))
-        continue
-      }
-
       if (event.type === "thinking") {
-        if (state.textBlockActive) {
-          results.push(...this.closeTextBlock(state))
-        }
-        results.push(...this.emitThinkingDelta(state, event.text))
         continue
       }
 
-      results.push(...this.closeThinkingBlock(state))
+      if (event.type === "thinking_end") {
+        state.leadingTaggedContentState = "plain"
+        state.leadingTaggedContentBuffer = ""
+        continue
+      }
+
+      if (state.thinkingBlockActive) {
+        results.push(...this.closeThinkingBlock(state))
+      }
+      results.push(...this.emitTextDelta(state, event.text))
     }
 
     return results
   }
 
   private flushPendingTaggedContent(state: StreamState): string[] {
-    const results: string[] = []
-
-    for (const event of flushThinkingTagTextDelta(state.thinkingTagState)) {
-      if (event.type === "text") {
-        if (state.thinkingBlockActive) {
-          results.push(...this.closeThinkingBlock(state))
-        }
-        results.push(...this.emitTextDelta(state, event.text))
-        continue
-      }
-
-      if (event.type === "thinking_end") {
-        results.push(...this.closeThinkingBlock(state))
-        continue
-      }
-
-      if (state.textBlockActive) {
-        results.push(...this.closeTextBlock(state))
-      }
-      results.push(...this.emitThinkingDelta(state, event.text))
+    if (
+      state.leadingTaggedContentState !== "detecting" &&
+      state.leadingTaggedContentState !== "suppressing"
+    ) {
+      return []
     }
 
+    const buffered = state.leadingTaggedContentBuffer
+    state.leadingTaggedContentState = "plain"
+    state.leadingTaggedContentBuffer = ""
+    state.thinkingTagState = createThinkingTagStreamState()
+
+    if (!buffered) {
+      return []
+    }
+
+    const results: string[] = []
+    if (state.thinkingBlockActive) {
+      results.push(...this.closeThinkingBlock(state))
+    }
+    results.push(...this.emitTextDelta(state, buffered))
     return results
   }
 
@@ -1490,45 +1593,40 @@ export class OpenaiCompatService implements OnModuleInit {
     const deltaReasoningContent = delta.reasoning_content as string | undefined
     const deltaReasoningText =
       deltaReasoning || deltaReasoningContent || delta.reasoning_text
-
-    if (typeof deltaReasoningText === "string" && deltaReasoningText) {
-      if (state.textBlockActive) {
-        results.push(...this.closeTextBlock(state))
-      }
-      const source = deltaReasoning
-        ? "delta.reasoning"
-        : deltaReasoningContent
-          ? "delta.reasoning_content"
-          : "delta.reasoning_text"
-      this.logReasoningHit(source, deltaReasoningText)
-      results.push(...this.emitThinkingDelta(state, deltaReasoningText))
-    }
-
     const providerMessage = chunk.message
     const providerReasoning =
       providerMessage && typeof providerMessage === "object"
         ? (providerMessage as Record<string, unknown>).reasoning
         : undefined
-    if (typeof providerReasoning === "string" && providerReasoning) {
+    const providerReasoningText = extractReasoningText(providerReasoning)
+    const explicitReasoningText =
+      typeof deltaReasoningText === "string" && deltaReasoningText
+        ? deltaReasoningText
+        : providerReasoningText
+    const explicitReasoningSource =
+      typeof deltaReasoningText === "string" && deltaReasoningText
+        ? deltaReasoning
+          ? "delta.reasoning"
+          : deltaReasoningContent
+            ? "delta.reasoning_content"
+            : "delta.reasoning_text"
+        : providerReasoningText
+          ? "message.reasoning"
+          : null
+
+    if (explicitReasoningText && explicitReasoningSource) {
+      state.explicitReasoningSeen = true
+      if (
+        !state.contentStarted &&
+        state.leadingTaggedContentState === "plain"
+      ) {
+        state.leadingTaggedContentState = "detecting"
+      }
       if (state.textBlockActive) {
         results.push(...this.closeTextBlock(state))
       }
-      this.logReasoningHit("message.reasoning", providerReasoning)
-      results.push(...this.emitThinkingDelta(state, providerReasoning))
-    } else if (
-      providerReasoning &&
-      typeof providerReasoning === "object" &&
-      typeof (providerReasoning as Record<string, unknown>).content === "string"
-    ) {
-      if (state.textBlockActive) {
-        results.push(...this.closeTextBlock(state))
-      }
-      results.push(
-        ...this.emitThinkingDelta(
-          state,
-          (providerReasoning as Record<string, unknown>).content as string
-        )
-      )
+      this.logReasoningHit(explicitReasoningSource, explicitReasoningText)
+      results.push(...this.emitThinkingDelta(state, explicitReasoningText))
     }
 
     // Handle text content delta
