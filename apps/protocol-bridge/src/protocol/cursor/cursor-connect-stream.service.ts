@@ -1062,14 +1062,20 @@ export class CursorConnectStreamService {
 
   private normalizeHistoryForBackend(
     messages: Array<{ role: "user" | "assistant"; content: MessageContent }>,
-    contextLabel: string
+    contextLabel: string,
+    options?: { pendingToolUseIds?: string[] }
   ): Array<{ role: "user" | "assistant"; content: MessageContent }> {
     const normalized = normalizeToolProtocolMessages(
-      messages as Array<{ role: "user" | "assistant"; content: unknown }>
+      messages as Array<{ role: "user" | "assistant"; content: unknown }>,
+      { pendingToolUseIds: options?.pendingToolUseIds }
     )
-    if (normalized.removedToolResults > 0) {
+    if (
+      normalized.removedToolResults > 0 ||
+      normalized.injectedToolResults > 0
+    ) {
       this.logger.warn(
-        `Protocol normalization (${contextLabel}) removed ${normalized.removedToolResults} invalid tool_result block(s)`
+        `Protocol normalization (${contextLabel}) removed ${normalized.removedToolResults} invalid tool_result block(s), ` +
+          `injected ${normalized.injectedToolResults} synthetic tool_result block(s)`
       )
     }
     return normalized.messages as Array<{
@@ -1083,7 +1089,11 @@ export class CursorConnectStreamService {
     backend: BackendType,
     messages: Array<{ role: "user" | "assistant"; content: MessageContent }>,
     budget: { maxTokens: number; systemPromptTokens: number },
-    options?: { preferSummary?: boolean; contextLabel?: string }
+    options?: {
+      preferSummary?: boolean
+      contextLabel?: string
+      pendingToolUseIds?: string[]
+    }
   ): Array<{ role: "user" | "assistant"; content: MessageContent }> {
     // All backends now go through protocol-layer truncation.
     // GoogleService.enforceTokenBudget() remains as a safety net for edge cases.
@@ -1095,10 +1105,12 @@ export class CursorConnectStreamService {
       ? this.truncator.truncate(conversationId, messages as UnifiedMessage[], {
           systemPromptTokens: budget.systemPromptTokens,
           maxTokens: budget.maxTokens,
+          pendingToolUseIds: options?.pendingToolUseIds,
         })
       : this.truncator.truncateInMemory(messages as UnifiedMessage[], {
           systemPromptTokens: budget.systemPromptTokens,
           maxTokens: budget.maxTokens,
+          pendingToolUseIds: options?.pendingToolUseIds,
         })
 
     const truncatedMessages = primary.messages as Array<{
@@ -5979,9 +5991,12 @@ ${raw}
       )
     }
 
+    const pendingToolUseIds =
+      this.sessionManager.getPendingToolCallIds(conversationId)
     rawMessages = this.normalizeHistoryForBackend(
       rawMessages,
-      `chat pre-truncation: ${conversationId}`
+      `chat pre-truncation: ${conversationId}`,
+      { pendingToolUseIds }
     )
     if (usingSessionHistory) {
       this.sessionManager.replaceMessages(conversationId, rawMessages)
@@ -6051,6 +6066,7 @@ ${raw}
       {
         preferSummary: shouldUseSummaryTruncation,
         contextLabel: `chat pre-send: ${conversationId}`,
+        pendingToolUseIds,
       }
     )
 
@@ -6084,6 +6100,9 @@ ${raw}
     dto.tools = apiTools
     dto._conversationId = conversationId
     dto._contextTokenBudget = budget.maxTokens
+    if (pendingToolUseIds.length > 0) {
+      dto._pendingToolUseIds = pendingToolUseIds
+    }
     this.logger.debug(`Added ${dto.tools.length} tool definition(s) to request`)
 
     // Add thinking if needed
@@ -6384,7 +6403,10 @@ ${raw}
         const session = this.sessionManager.getSession(conversationId)
         if (session) {
           const sanitized = this.toolIntegrity.sanitizeMessages(
-            session.messages as UnifiedMessage[]
+            session.messages as UnifiedMessage[],
+            {
+              pendingToolUseIds: Array.from(session.pendingToolCalls.keys()),
+            }
           )
           if (
             sanitized.removedOrphanToolUses > 0 ||
@@ -6756,7 +6778,11 @@ ${raw}
           role: "user" | "assistant"
           content: MessageContent
         }>,
-        `shell continuation: ${conversationId}`
+        `shell continuation: ${conversationId}`,
+        {
+          pendingToolUseIds:
+            this.sessionManager.getPendingToolCallIds(conversationId),
+        }
       )
       this.sessionManager.replaceMessages(
         conversationId,
@@ -6774,6 +6800,8 @@ ${raw}
         {
           preferSummary: !this.hasStructuredToolContent(normalizedShellHistory),
           contextLabel: `shell continuation: ${conversationId}`,
+          pendingToolUseIds:
+            this.sessionManager.getPendingToolCallIds(conversationId),
         }
       )
 
@@ -6785,6 +6813,8 @@ ${raw}
         stream: true,
         tools: apiTools,
       }
+      dto._pendingToolUseIds =
+        this.sessionManager.getPendingToolCallIds(conversationId)
 
       // 续流中保持 thinking 配置（与主流一致）
       if (session.thinkingLevel > 0) {
@@ -7636,7 +7666,11 @@ ${raw}
         role: "user" | "assistant"
         content: MessageContent
       }>,
-      `tool continuation: ${conversationId}`
+      `tool continuation: ${conversationId}`,
+      {
+        pendingToolUseIds:
+          this.sessionManager.getPendingToolCallIds(conversationId),
+      }
     )
     this.sessionManager.replaceMessages(
       conversationId,
@@ -7656,6 +7690,8 @@ ${raw}
           normalizedContinuationHistory
         ),
         contextLabel: `tool continuation: ${conversationId}`,
+        pendingToolUseIds:
+          this.sessionManager.getPendingToolCallIds(conversationId),
       }
     )
 
@@ -7667,6 +7703,8 @@ ${raw}
       stream: true,
       tools: continuationTools,
     }
+    dto._pendingToolUseIds =
+      this.sessionManager.getPendingToolCallIds(conversationId)
 
     // 续流中保持 thinking 配置（与主流一致）
     if (session.thinkingLevel > 0) {

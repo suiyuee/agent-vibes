@@ -1261,6 +1261,12 @@ export class ChatSessionManager implements OnModuleDestroy {
     }
   }
 
+  getPendingToolCallIds(conversationId: string): string[] {
+    const session = this.getSession(conversationId)
+    if (!session) return []
+    return Array.from(session.pendingToolCalls.keys())
+  }
+
   /**
    * Get and remove pending tool call
    */
@@ -1559,10 +1565,15 @@ export class ChatSessionManager implements OnModuleDestroy {
     const session = this.getSession(conversationId)
     if (!session) return
 
+    const pendingToolUseIds = Array.from(session.pendingToolCalls.keys())
+
     // Write-time validation: enforce tool protocol integrity before storing
     const guardResult = enforceToolProtocol(
       messages as Array<{ role: "user" | "assistant"; content: unknown }>,
-      { mode: "global" }
+      {
+        mode: "global",
+        pendingToolUseIds,
+      }
     )
     if (guardResult.changed) {
       this.logger.warn(

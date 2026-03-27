@@ -43,6 +43,15 @@ export interface IntegrityViolation {
   detail: string
 }
 
+export interface EnforceToolProtocolOptions {
+  mode?: "strict-adjacent" | "global"
+  /**
+   * Tool-use IDs that are still legitimately pending. These must remain
+   * unmatched without being rewritten into synthetic failure results.
+   */
+  pendingToolUseIds?: Iterable<string>
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -143,10 +152,11 @@ function hasNonEmptyContent(msg: IntegrityMessage): boolean {
  * Options:
  * - mode: 'strict-adjacent' (default) — tool_result must match tool_use in the immediately previous assistant message
  * - mode: 'global' — tool_result can match any tool_use in the entire conversation (use after truncation)
+ * - pendingToolUseIds: preserve these live tool_use IDs without injecting synthetic tool_result
  */
 export function enforceToolProtocol<T extends IntegrityMessage>(
   messages: T[],
-  options?: { mode?: "strict-adjacent" | "global" }
+  options?: EnforceToolProtocolOptions
 ): RepairResult<T> {
   if (!Array.isArray(messages) || messages.length === 0) {
     return {
@@ -159,6 +169,7 @@ export function enforceToolProtocol<T extends IntegrityMessage>(
   }
 
   const mode = options?.mode ?? "strict-adjacent"
+  const pendingToolUseIds = new Set(options?.pendingToolUseIds ?? [])
   let changed = false
   let removedToolResults = 0
 
@@ -266,7 +277,7 @@ export function enforceToolProtocol<T extends IntegrityMessage>(
     // Find orphan IDs (tool_use without tool_result)
     const orphanIds: string[] = []
     for (const id of toolUseIds) {
-      if (!allResultIds.has(id)) {
+      if (!allResultIds.has(id) && !pendingToolUseIds.has(id)) {
         orphanIds.push(id)
       }
     }

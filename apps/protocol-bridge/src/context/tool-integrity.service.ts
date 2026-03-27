@@ -7,7 +7,10 @@ import {
   normalizeContent,
 } from "./types"
 import { TokenCounterService } from "./token-counter.service"
-import { enforceToolProtocol } from "./message-integrity-guard"
+import {
+  enforceToolProtocol,
+  type EnforceToolProtocolOptions,
+} from "./message-integrity-guard"
 
 /**
  * Result of sanitizeMessages operation
@@ -406,7 +409,10 @@ export class ToolIntegrityService {
    * 3. Remove messages that become empty after cleanup
    * 4. Merge consecutive same-role messages (invalid for most backends)
    */
-  sanitizeMessages(messages: UnifiedMessage[]): SanitizeResult {
+  sanitizeMessages(
+    messages: UnifiedMessage[],
+    options?: EnforceToolProtocolOptions
+  ): SanitizeResult {
     if (messages.length === 0) {
       return {
         messages: [],
@@ -422,7 +428,10 @@ export class ToolIntegrityService {
       messages as Array<
         UnifiedMessage & { role: "user" | "assistant"; content: unknown }
       >,
-      { mode: "global" }
+      {
+        mode: options?.mode ?? "global",
+        pendingToolUseIds: options?.pendingToolUseIds,
+      }
     )
 
     const result: SanitizeResult = {

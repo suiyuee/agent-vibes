@@ -237,7 +237,8 @@ export function translateClaudeToCodex(
 
   // ── Normalize messages: remove orphaned tool_result blocks ────
   const protocolNormalized = normalizeToolProtocolMessages(
-    dto.messages as Array<{ role: "user" | "assistant"; content: unknown }>
+    dto.messages as Array<{ role: "user" | "assistant"; content: unknown }>,
+    { pendingToolUseIds: dto._pendingToolUseIds }
   )
   const normalizedMessages = protocolNormalized.messages
 

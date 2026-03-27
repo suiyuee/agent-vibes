@@ -1,4 +1,7 @@
-import { enforceToolProtocol } from "./message-integrity-guard"
+import {
+  enforceToolProtocol,
+  type EnforceToolProtocolOptions,
+} from "./message-integrity-guard"
 
 export interface ToolProtocolMessage {
   role: "user" | "assistant"
@@ -30,7 +33,7 @@ export interface ToolProtocolNormalizationResult<
  */
 export function normalizeToolProtocolMessages<T extends ToolProtocolMessage>(
   messages: T[],
-  options?: { mode?: "strict-adjacent" | "global" }
+  options?: EnforceToolProtocolOptions
 ): ToolProtocolNormalizationResult<T> {
   if (!Array.isArray(messages) || messages.length === 0) {
     return {
@@ -43,7 +46,7 @@ export function normalizeToolProtocolMessages<T extends ToolProtocolMessage>(
 
   const result = enforceToolProtocol(
     messages as Array<T & { role: "user" | "assistant"; content: unknown }>,
-    { mode: options?.mode }
+    options
   )
 
   return {

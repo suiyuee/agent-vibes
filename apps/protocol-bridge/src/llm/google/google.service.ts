@@ -1860,7 +1860,8 @@ export class GoogleService {
     let lastUserTaskTextNormalized: string | null = null
 
     const protocolNormalized = normalizeToolProtocolMessages(
-      dto.messages as Array<{ role: "user" | "assistant"; content: unknown }>
+      dto.messages as Array<{ role: "user" | "assistant"; content: unknown }>,
+      { pendingToolUseIds: dto._pendingToolUseIds }
     )
     if (
       protocolNormalized.removedToolResults > 0 ||

@@ -167,7 +167,8 @@ export class CreateMessageDto {
 
   @ApiPropertyOptional({
     type: [String],
-    description: "Additional stop sequences to append to the default backend set.",
+    description:
+      "Additional stop sequences to append to the default backend set.",
   })
   @IsArray()
   @IsOptional()
@@ -226,4 +227,13 @@ export class CreateMessageDto {
   @IsNumber()
   _contextTokenBudget?: number
 
+  /**
+   * Internal list of live pending tool_use IDs.
+   * Used to avoid rewriting in-flight tool calls into synthetic failures
+   * during normalization and truncation.
+   */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  _pendingToolUseIds?: string[]
 }

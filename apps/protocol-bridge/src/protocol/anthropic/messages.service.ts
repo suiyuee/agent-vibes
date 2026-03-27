@@ -161,7 +161,10 @@ export class MessagesService implements OnModuleInit {
     // Apply truncation
     const truncationResult = this.truncator.truncateInMemory(
       dto.messages as UnifiedMessage[],
-      { systemPromptTokens }
+      {
+        systemPromptTokens,
+        pendingToolUseIds: dto._pendingToolUseIds,
+      }
     )
 
     if (truncationResult.was_truncated) {

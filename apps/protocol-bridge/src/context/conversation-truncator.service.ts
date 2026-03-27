@@ -54,6 +54,7 @@ export class ConversationTruncatorService {
     options?: {
       systemPromptTokens?: number
       maxTokens?: number
+      pendingToolUseIds?: Iterable<string>
     }
   ): TruncationResult {
     const systemPromptTokens = options?.systemPromptTokens || 0
@@ -193,7 +194,8 @@ export class ConversationTruncatorService {
     if (truncatedTokenCount > effectiveMaxTokens) {
       const fitted = this.trimOldestMessagesToFit(
         finalMessages,
-        effectiveMaxTokens
+        effectiveMaxTokens,
+        { pendingToolUseIds: options?.pendingToolUseIds }
       )
       finalMessages = fitted.messages
       truncatedTokenCount = fitted.tokenCount
@@ -229,6 +231,7 @@ export class ConversationTruncatorService {
     options?: {
       systemPromptTokens?: number
       maxTokens?: number
+      pendingToolUseIds?: Iterable<string>
     }
   ): TruncationResult {
     const systemPromptTokens = options?.systemPromptTokens || 0
@@ -285,7 +288,8 @@ export class ConversationTruncatorService {
     if (truncatedTokenCount > effectiveMaxTokens) {
       const fitted = this.trimOldestMessagesToFit(
         recentMessages,
-        effectiveMaxTokens
+        effectiveMaxTokens,
+        { pendingToolUseIds: options?.pendingToolUseIds }
       )
       recentMessages = fitted.messages
       truncatedTokenCount = fitted.tokenCount
@@ -367,7 +371,8 @@ export class ConversationTruncatorService {
 
   private trimOldestMessagesToFit(
     messages: UnifiedMessage[],
-    maxTokens: number
+    maxTokens: number,
+    options?: { pendingToolUseIds?: Iterable<string> }
   ): {
     messages: UnifiedMessage[]
     tokenCount: number
@@ -381,18 +386,32 @@ export class ConversationTruncatorService {
     const originalTokenCount = this.tokenCounter.countMessages(fitted)
     let tokenCount = originalTokenCount
 
-    // Keep at least the latest message; if a single message is too large,
-    // caller should handle it as oversized user/tool input.
-    while (fitted.length > 1 && tokenCount > maxTokens) {
+    while (true) {
+      // Keep at least the latest message; if a single message is too large,
+      // caller should handle it as oversized user/tool input.
+      while (fitted.length > 1 && tokenCount > maxTokens) {
+        fitted.shift()
+        tokenCount = this.tokenCounter.countMessages(fitted)
+      }
+
+      // After trimming, use unified sanitize to clean up all orphaned
+      // tool_use/tool_result blocks in both directions.
+      const sanitized = this.toolIntegrity.sanitizeMessages(fitted, {
+        mode: "global",
+        pendingToolUseIds: options?.pendingToolUseIds,
+      })
+      fitted = sanitized.messages
+      tokenCount = this.tokenCounter.countMessages(fitted)
+
+      if (tokenCount <= maxTokens || fitted.length <= 1) {
+        break
+      }
+
+      // Synthetic repair can grow the history. Drop one more oldest message
+      // and re-run cleanup until the hard budget is satisfied again.
       fitted.shift()
       tokenCount = this.tokenCounter.countMessages(fitted)
     }
-
-    // After trimming, use unified sanitize to clean up all orphaned
-    // tool_use/tool_result blocks in both directions.
-    const sanitized = this.toolIntegrity.sanitizeMessages(fitted)
-    fitted = sanitized.messages
-    tokenCount = this.tokenCounter.countMessages(fitted)
 
     return { messages: fitted, tokenCount, originalTokenCount }
   }
