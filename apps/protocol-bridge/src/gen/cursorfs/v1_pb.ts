@@ -2,79 +2,89 @@
 // @generated from file cursorfs/v1.proto (package cursorfs.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file cursorfs/v1.proto.
  */
-export const file_cursorfs_v1: GenFile = /*@__PURE__*/
-  fileDesc("ChFjdXJzb3Jmcy92MS5wcm90bxILY3Vyc29yZnMudjEiKgoWQ3Vyc29yRlNHZXREaWZmUmVxdWVzdBIQCghtb3VudF9pZBgBIAEoCSInChdDdXJzb3JGU0dldERpZmZSZXNwb25zZRIMCgRkaWZmGAEgASgJIhsKGUN1cnNvckZTTGlzdE1vdW50c1JlcXVlc3QiTAoaQ3Vyc29yRlNMaXN0TW91bnRzUmVzcG9uc2USLgoGbW91bnRzGAEgAygLMh4uY3Vyc29yZnMudjEuQ3Vyc29yRlNNb3VudEluZm8iTgoRQ3Vyc29yRlNNb3VudEluZm8SEAoIbW91bnRfaWQYASABKAkSEwoLc291cmNlX3BhdGgYAiABKAkSEgoKY3JlYXRlZF9hdBgDIAEoAyIuChRDdXJzb3JGU01vdW50UmVxdWVzdBIWCg5kaXJlY3RvcnlfcGF0aBgBIAEoCSIpChVDdXJzb3JGU01vdW50UmVzcG9uc2USEAoIbW91bnRfaWQYASABKAkiGQoXQ3Vyc29yRlNTaHV0ZG93blJlcXVlc3QiKwoYQ3Vyc29yRlNTaHV0ZG93blJlc3BvbnNlEg8KB3N1Y2Nlc3MYASABKAgiKgoWQ3Vyc29yRlNVbm1vdW50UmVxdWVzdBIQCghtb3VudF9pZBgBIAEoCSI5ChdDdXJzb3JGU1VubW91bnRSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJYgZwcm90bzM");
+export const file_cursorfs_v1: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "ChFjdXJzb3Jmcy92MS5wcm90bxILY3Vyc29yZnMudjEiKgoWQ3Vyc29yRlNHZXREaWZmUmVxdWVzdBIQCghtb3VudF9pZBgBIAEoCSInChdDdXJzb3JGU0dldERpZmZSZXNwb25zZRIMCgRkaWZmGAEgASgJIhsKGUN1cnNvckZTTGlzdE1vdW50c1JlcXVlc3QiTAoaQ3Vyc29yRlNMaXN0TW91bnRzUmVzcG9uc2USLgoGbW91bnRzGAEgAygLMh4uY3Vyc29yZnMudjEuQ3Vyc29yRlNNb3VudEluZm8iTgoRQ3Vyc29yRlNNb3VudEluZm8SEAoIbW91bnRfaWQYASABKAkSEwoLc291cmNlX3BhdGgYAiABKAkSEgoKY3JlYXRlZF9hdBgDIAEoAyIuChRDdXJzb3JGU01vdW50UmVxdWVzdBIWCg5kaXJlY3RvcnlfcGF0aBgBIAEoCSIpChVDdXJzb3JGU01vdW50UmVzcG9uc2USEAoIbW91bnRfaWQYASABKAkiGQoXQ3Vyc29yRlNTaHV0ZG93blJlcXVlc3QiKwoYQ3Vyc29yRlNTaHV0ZG93blJlc3BvbnNlEg8KB3N1Y2Nlc3MYASABKAgiKgoWQ3Vyc29yRlNVbm1vdW50UmVxdWVzdBIQCghtb3VudF9pZBgBIAEoCSI5ChdDdXJzb3JGU1VubW91bnRSZXNwb25zZRIPCgdzdWNjZXNzGAEgASgIEg0KBWVycm9yGAIgASgJYgZwcm90bzM"
+  )
 
 /**
  * @generated from message cursorfs.v1.CursorFSGetDiffRequest
  */
-export type CursorFSGetDiffRequest = Message<"cursorfs.v1.CursorFSGetDiffRequest"> & {
-  /**
-   * @generated from field: string mount_id = 1;
-   */
-  mountId: string;
-};
+export type CursorFSGetDiffRequest =
+  Message<"cursorfs.v1.CursorFSGetDiffRequest"> & {
+    /**
+     * @generated from field: string mount_id = 1;
+     */
+    mountId: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSGetDiffRequest.
  * Use `create(CursorFSGetDiffRequestSchema)` to create a new message.
  */
-export const CursorFSGetDiffRequestSchema: GenMessage<CursorFSGetDiffRequest> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 0);
+export const CursorFSGetDiffRequestSchema: GenMessage<CursorFSGetDiffRequest> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 0)
 
 /**
  * @generated from message cursorfs.v1.CursorFSGetDiffResponse
  */
-export type CursorFSGetDiffResponse = Message<"cursorfs.v1.CursorFSGetDiffResponse"> & {
-  /**
-   * @generated from field: string diff = 1;
-   */
-  diff: string;
-};
+export type CursorFSGetDiffResponse =
+  Message<"cursorfs.v1.CursorFSGetDiffResponse"> & {
+    /**
+     * @generated from field: string diff = 1;
+     */
+    diff: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSGetDiffResponse.
  * Use `create(CursorFSGetDiffResponseSchema)` to create a new message.
  */
-export const CursorFSGetDiffResponseSchema: GenMessage<CursorFSGetDiffResponse> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 1);
+export const CursorFSGetDiffResponseSchema: GenMessage<CursorFSGetDiffResponse> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 1)
 
 /**
  * @generated from message cursorfs.v1.CursorFSListMountsRequest
  */
-export type CursorFSListMountsRequest = Message<"cursorfs.v1.CursorFSListMountsRequest"> & {
-};
+export type CursorFSListMountsRequest =
+  Message<"cursorfs.v1.CursorFSListMountsRequest"> & {}
 
 /**
  * Describes the message cursorfs.v1.CursorFSListMountsRequest.
  * Use `create(CursorFSListMountsRequestSchema)` to create a new message.
  */
-export const CursorFSListMountsRequestSchema: GenMessage<CursorFSListMountsRequest> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 2);
+export const CursorFSListMountsRequestSchema: GenMessage<CursorFSListMountsRequest> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 2)
 
 /**
  * @generated from message cursorfs.v1.CursorFSListMountsResponse
  */
-export type CursorFSListMountsResponse = Message<"cursorfs.v1.CursorFSListMountsResponse"> & {
-  /**
-   * @generated from field: repeated cursorfs.v1.CursorFSMountInfo mounts = 1;
-   */
-  mounts: CursorFSMountInfo[];
-};
+export type CursorFSListMountsResponse =
+  Message<"cursorfs.v1.CursorFSListMountsResponse"> & {
+    /**
+     * @generated from field: repeated cursorfs.v1.CursorFSMountInfo mounts = 1;
+     */
+    mounts: CursorFSMountInfo[]
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSListMountsResponse.
  * Use `create(CursorFSListMountsResponseSchema)` to create a new message.
  */
-export const CursorFSListMountsResponseSchema: GenMessage<CursorFSListMountsResponse> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 3);
+export const CursorFSListMountsResponseSchema: GenMessage<CursorFSListMountsResponse> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 3)
 
 /**
  * @generated from message cursorfs.v1.CursorFSMountInfo
@@ -83,126 +93,137 @@ export type CursorFSMountInfo = Message<"cursorfs.v1.CursorFSMountInfo"> & {
   /**
    * @generated from field: string mount_id = 1;
    */
-  mountId: string;
+  mountId: string
 
   /**
    * @generated from field: string source_path = 2;
    */
-  sourcePath: string;
+  sourcePath: string
 
   /**
    * @generated from field: int64 created_at = 3;
    */
-  createdAt: bigint;
-};
+  createdAt: bigint
+}
 
 /**
  * Describes the message cursorfs.v1.CursorFSMountInfo.
  * Use `create(CursorFSMountInfoSchema)` to create a new message.
  */
-export const CursorFSMountInfoSchema: GenMessage<CursorFSMountInfo> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 4);
+export const CursorFSMountInfoSchema: GenMessage<CursorFSMountInfo> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 4)
 
 /**
  * @generated from message cursorfs.v1.CursorFSMountRequest
  */
-export type CursorFSMountRequest = Message<"cursorfs.v1.CursorFSMountRequest"> & {
-  /**
-   * @generated from field: string directory_path = 1;
-   */
-  directoryPath: string;
-};
+export type CursorFSMountRequest =
+  Message<"cursorfs.v1.CursorFSMountRequest"> & {
+    /**
+     * @generated from field: string directory_path = 1;
+     */
+    directoryPath: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSMountRequest.
  * Use `create(CursorFSMountRequestSchema)` to create a new message.
  */
-export const CursorFSMountRequestSchema: GenMessage<CursorFSMountRequest> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 5);
+export const CursorFSMountRequestSchema: GenMessage<CursorFSMountRequest> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 5)
 
 /**
  * @generated from message cursorfs.v1.CursorFSMountResponse
  */
-export type CursorFSMountResponse = Message<"cursorfs.v1.CursorFSMountResponse"> & {
-  /**
-   * @generated from field: string mount_id = 1;
-   */
-  mountId: string;
-};
+export type CursorFSMountResponse =
+  Message<"cursorfs.v1.CursorFSMountResponse"> & {
+    /**
+     * @generated from field: string mount_id = 1;
+     */
+    mountId: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSMountResponse.
  * Use `create(CursorFSMountResponseSchema)` to create a new message.
  */
-export const CursorFSMountResponseSchema: GenMessage<CursorFSMountResponse> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 6);
+export const CursorFSMountResponseSchema: GenMessage<CursorFSMountResponse> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 6)
 
 /**
  * @generated from message cursorfs.v1.CursorFSShutdownRequest
  */
-export type CursorFSShutdownRequest = Message<"cursorfs.v1.CursorFSShutdownRequest"> & {
-};
+export type CursorFSShutdownRequest =
+  Message<"cursorfs.v1.CursorFSShutdownRequest"> & {}
 
 /**
  * Describes the message cursorfs.v1.CursorFSShutdownRequest.
  * Use `create(CursorFSShutdownRequestSchema)` to create a new message.
  */
-export const CursorFSShutdownRequestSchema: GenMessage<CursorFSShutdownRequest> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 7);
+export const CursorFSShutdownRequestSchema: GenMessage<CursorFSShutdownRequest> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 7)
 
 /**
  * @generated from message cursorfs.v1.CursorFSShutdownResponse
  */
-export type CursorFSShutdownResponse = Message<"cursorfs.v1.CursorFSShutdownResponse"> & {
-  /**
-   * @generated from field: bool success = 1;
-   */
-  success: boolean;
-};
+export type CursorFSShutdownResponse =
+  Message<"cursorfs.v1.CursorFSShutdownResponse"> & {
+    /**
+     * @generated from field: bool success = 1;
+     */
+    success: boolean
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSShutdownResponse.
  * Use `create(CursorFSShutdownResponseSchema)` to create a new message.
  */
-export const CursorFSShutdownResponseSchema: GenMessage<CursorFSShutdownResponse> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 8);
+export const CursorFSShutdownResponseSchema: GenMessage<CursorFSShutdownResponse> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 8)
 
 /**
  * @generated from message cursorfs.v1.CursorFSUnmountRequest
  */
-export type CursorFSUnmountRequest = Message<"cursorfs.v1.CursorFSUnmountRequest"> & {
-  /**
-   * @generated from field: string mount_id = 1;
-   */
-  mountId: string;
-};
+export type CursorFSUnmountRequest =
+  Message<"cursorfs.v1.CursorFSUnmountRequest"> & {
+    /**
+     * @generated from field: string mount_id = 1;
+     */
+    mountId: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSUnmountRequest.
  * Use `create(CursorFSUnmountRequestSchema)` to create a new message.
  */
-export const CursorFSUnmountRequestSchema: GenMessage<CursorFSUnmountRequest> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 9);
+export const CursorFSUnmountRequestSchema: GenMessage<CursorFSUnmountRequest> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 9)
 
 /**
  * @generated from message cursorfs.v1.CursorFSUnmountResponse
  */
-export type CursorFSUnmountResponse = Message<"cursorfs.v1.CursorFSUnmountResponse"> & {
-  /**
-   * @generated from field: bool success = 1;
-   */
-  success: boolean;
+export type CursorFSUnmountResponse =
+  Message<"cursorfs.v1.CursorFSUnmountResponse"> & {
+    /**
+     * @generated from field: bool success = 1;
+     */
+    success: boolean
 
-  /**
-   * @generated from field: string error = 2;
-   */
-  error: string;
-};
+    /**
+     * @generated from field: string error = 2;
+     */
+    error: string
+  }
 
 /**
  * Describes the message cursorfs.v1.CursorFSUnmountResponse.
  * Use `create(CursorFSUnmountResponseSchema)` to create a new message.
  */
-export const CursorFSUnmountResponseSchema: GenMessage<CursorFSUnmountResponse> = /*@__PURE__*/
-  messageDesc(file_cursorfs_v1, 10);
-
+export const CursorFSUnmountResponseSchema: GenMessage<CursorFSUnmountResponse> =
+  /*@__PURE__*/
+  messageDesc(file_cursorfs_v1, 10)

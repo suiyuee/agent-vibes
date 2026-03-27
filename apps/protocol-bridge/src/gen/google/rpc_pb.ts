@@ -2,17 +2,21 @@
 // @generated from file google/rpc.proto (package google.rpc, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Any } from "@bufbuild/protobuf/wkt";
-import { file_google_protobuf_any } from "@bufbuild/protobuf/wkt";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Any } from "@bufbuild/protobuf/wkt"
+import { file_google_protobuf_any } from "@bufbuild/protobuf/wkt"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file google/rpc.proto.
  */
-export const file_google_rpc: GenFile = /*@__PURE__*/
-  fileDesc("ChBnb29nbGUvcnBjLnByb3RvEgpnb29nbGUucnBjIk4KBlN0YXR1cxIMCgRjb2RlGAEgASgFEg8KB21lc3NhZ2UYAiABKAkSJQoHZGV0YWlscxgDIAMoCzIULmdvb2dsZS5wcm90b2J1Zi5BbnliBnByb3RvMw", [file_google_protobuf_any]);
+export const file_google_rpc: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "ChBnb29nbGUvcnBjLnByb3RvEgpnb29nbGUucnBjIk4KBlN0YXR1cxIMCgRjb2RlGAEgASgFEg8KB21lc3NhZ2UYAiABKAkSJQoHZGV0YWlscxgDIAMoCzIULmdvb2dsZS5wcm90b2J1Zi5BbnliBnByb3RvMw",
+    [file_google_protobuf_any]
+  )
 
 /**
  * @generated from message google.rpc.Status
@@ -21,23 +25,23 @@ export type Status = Message<"google.rpc.Status"> & {
   /**
    * @generated from field: int32 code = 1;
    */
-  code: number;
+  code: number
 
   /**
    * @generated from field: string message = 2;
    */
-  message: string;
+  message: string
 
   /**
    * @generated from field: repeated google.protobuf.Any details = 3;
    */
-  details: Any[];
-};
+  details: Any[]
+}
 
 /**
  * Describes the message google.rpc.Status.
  * Use `create(StatusSchema)` to create a new message.
  */
-export const StatusSchema: GenMessage<Status> = /*@__PURE__*/
-  messageDesc(file_google_rpc, 0);
-
+export const StatusSchema: GenMessage<Status> =
+  /*@__PURE__*/
+  messageDesc(file_google_rpc, 0)

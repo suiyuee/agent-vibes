@@ -2,15 +2,18 @@
 // @generated from file internapi/v1.proto (package internapi.v1, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file internapi/v1.proto.
  */
-export const file_internapi_v1: GenFile = /*@__PURE__*/
-  fileDesc("ChJpbnRlcm5hcGkvdjEucHJvdG8SDGludGVybmFwaS52MSKeAQoIQmxvYkRhdGESMQoKaW1hZ2VfZGF0YRgEIAEoCzIbLmludGVybmFwaS52MS5JbWFnZUJsb2JEYXRhSAASKQoJYmxvYl90eXBlGAEgASgOMhYuaW50ZXJuYXBpLnYxLkJsb2JUeXBlEg8KB2Jsb2JfaWQYAiABKAwSDQoFaW5kZXgYAyABKAVCFAoSdHlwZV9zcGVjaWZpY19kYXRhIj8KEkJsb2JEYXRhUGVyTWVzc2FnZRIpCglibG9iX2RhdGEYASADKAsyFi5pbnRlcm5hcGkudjEuQmxvYkRhdGEiIgoNSW1hZ2VCbG9iRGF0YRIRCgltaW1lX3R5cGUYASABKAkqqQIKCEJsb2JUeXBlEhkKFUJMT0JfVFlQRV9VTlNQRUNJRklFRBAAEhMKD0JMT0JfVFlQRV9JTUFHRRABEiAKHEJMT0JfVFlQRV9JTlZPQ0FUSU9OX0NPTlRFWFQQAhIbChdCTE9CX1RZUEVfRVhUUkFfQ09OVEVYVBADEiMKH0JMT0JfVFlQRV9HSVRfUFJfRElGRl9TRUxFQ1RJT04QBBIjCh9CTE9CX1RZUEVfU0VMRUNURURfUFVMTF9SRVFVRVNUEAUSEgoOQkxPQl9UWVBFX1RFWFQQBhIXChNCTE9CX1RZUEVfUklDSF9URVhUEAcSHwobQkxPQl9UWVBFX0VYVEVSTkFMX0xJTktfUERGEAgSFgoSQkxPQl9UWVBFX0RPQ1VNRU5UEAliBnByb3RvMw");
+export const file_internapi_v1: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "ChJpbnRlcm5hcGkvdjEucHJvdG8SDGludGVybmFwaS52MSKeAQoIQmxvYkRhdGESMQoKaW1hZ2VfZGF0YRgEIAEoCzIbLmludGVybmFwaS52MS5JbWFnZUJsb2JEYXRhSAASKQoJYmxvYl90eXBlGAEgASgOMhYuaW50ZXJuYXBpLnYxLkJsb2JUeXBlEg8KB2Jsb2JfaWQYAiABKAwSDQoFaW5kZXgYAyABKAVCFAoSdHlwZV9zcGVjaWZpY19kYXRhIj8KEkJsb2JEYXRhUGVyTWVzc2FnZRIpCglibG9iX2RhdGEYASADKAsyFi5pbnRlcm5hcGkudjEuQmxvYkRhdGEiIgoNSW1hZ2VCbG9iRGF0YRIRCgltaW1lX3R5cGUYASABKAkqqQIKCEJsb2JUeXBlEhkKFUJMT0JfVFlQRV9VTlNQRUNJRklFRBAAEhMKD0JMT0JfVFlQRV9JTUFHRRABEiAKHEJMT0JfVFlQRV9JTlZPQ0FUSU9OX0NPTlRFWFQQAhIbChdCTE9CX1RZUEVfRVhUUkFfQ09OVEVYVBADEiMKH0JMT0JfVFlQRV9HSVRfUFJfRElGRl9TRUxFQ1RJT04QBBIjCh9CTE9CX1RZUEVfU0VMRUNURURfUFVMTF9SRVFVRVNUEAUSEgoOQkxPQl9UWVBFX1RFWFQQBhIXChNCTE9CX1RZUEVfUklDSF9URVhUEAcSHwobQkxPQl9UWVBFX0VYVEVSTkFMX0xJTktfUERGEAgSFgoSQkxPQl9UWVBFX0RPQ1VNRU5UEAliBnByb3RvMw"
+  )
 
 /**
  * @generated from message internapi.v1.BlobData
@@ -19,36 +22,39 @@ export type BlobData = Message<"internapi.v1.BlobData"> & {
   /**
    * @generated from oneof internapi.v1.BlobData.type_specific_data
    */
-  typeSpecificData: {
-    /**
-     * @generated from field: internapi.v1.ImageBlobData image_data = 4;
-     */
-    value: ImageBlobData;
-    case: "imageData";
-  } | { case: undefined; value?: undefined };
+  typeSpecificData:
+    | {
+        /**
+         * @generated from field: internapi.v1.ImageBlobData image_data = 4;
+         */
+        value: ImageBlobData
+        case: "imageData"
+      }
+    | { case: undefined; value?: undefined }
 
   /**
    * @generated from field: internapi.v1.BlobType blob_type = 1;
    */
-  blobType: BlobType;
+  blobType: BlobType
 
   /**
    * @generated from field: bytes blob_id = 2;
    */
-  blobId: Uint8Array;
+  blobId: Uint8Array
 
   /**
    * @generated from field: int32 index = 3;
    */
-  index: number;
-};
+  index: number
+}
 
 /**
  * Describes the message internapi.v1.BlobData.
  * Use `create(BlobDataSchema)` to create a new message.
  */
-export const BlobDataSchema: GenMessage<BlobData> = /*@__PURE__*/
-  messageDesc(file_internapi_v1, 0);
+export const BlobDataSchema: GenMessage<BlobData> =
+  /*@__PURE__*/
+  messageDesc(file_internapi_v1, 0)
 
 /**
  * @generated from message internapi.v1.BlobDataPerMessage
@@ -57,15 +63,16 @@ export type BlobDataPerMessage = Message<"internapi.v1.BlobDataPerMessage"> & {
   /**
    * @generated from field: repeated internapi.v1.BlobData blob_data = 1;
    */
-  blobData: BlobData[];
-};
+  blobData: BlobData[]
+}
 
 /**
  * Describes the message internapi.v1.BlobDataPerMessage.
  * Use `create(BlobDataPerMessageSchema)` to create a new message.
  */
-export const BlobDataPerMessageSchema: GenMessage<BlobDataPerMessage> = /*@__PURE__*/
-  messageDesc(file_internapi_v1, 1);
+export const BlobDataPerMessageSchema: GenMessage<BlobDataPerMessage> =
+  /*@__PURE__*/
+  messageDesc(file_internapi_v1, 1)
 
 /**
  * @generated from message internapi.v1.ImageBlobData
@@ -74,15 +81,16 @@ export type ImageBlobData = Message<"internapi.v1.ImageBlobData"> & {
   /**
    * @generated from field: string mime_type = 1;
    */
-  mimeType: string;
-};
+  mimeType: string
+}
 
 /**
  * Describes the message internapi.v1.ImageBlobData.
  * Use `create(ImageBlobDataSchema)` to create a new message.
  */
-export const ImageBlobDataSchema: GenMessage<ImageBlobData> = /*@__PURE__*/
-  messageDesc(file_internapi_v1, 2);
+export const ImageBlobDataSchema: GenMessage<ImageBlobData> =
+  /*@__PURE__*/
+  messageDesc(file_internapi_v1, 2)
 
 /**
  * @generated from enum internapi.v1.BlobType
@@ -142,6 +150,6 @@ export enum BlobType {
 /**
  * Describes the enum internapi.v1.BlobType.
  */
-export const BlobTypeSchema: GenEnum<BlobType> = /*@__PURE__*/
-  enumDesc(file_internapi_v1, 0);
-
+export const BlobTypeSchema: GenEnum<BlobType> =
+  /*@__PURE__*/
+  enumDesc(file_internapi_v1, 0)

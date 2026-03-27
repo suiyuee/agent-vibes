@@ -109,9 +109,7 @@ export class CodexCacheService {
    * Build prompt cache headers for Codex requests.
    * Returns headers to be added to the HTTP request.
    */
-  buildCacheHeaders(
-    cacheId: string
-  ): Record<string, string> {
+  buildCacheHeaders(cacheId: string): Record<string, string> {
     if (!cacheId) return {}
 
     return {

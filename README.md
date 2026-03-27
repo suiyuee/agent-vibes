@@ -18,18 +18,12 @@ Agent Vibes is a proxy server that connects AI coding clients to AI backends thr
 **Clients** (front-end):
 
 - **Claude Code CLI** — Anthropic Messages API
-- **Cursor IDE** — Reverse-engineered native ConnectRPC/gRPC protocol
+- **Cursor IDE** — Protocol-compatible ConnectRPC/gRPC implementation
 
 **Backends** (back-end):
 
-- **Antigravity IDE** — Google Cloud Code API with native fingerprint and protocol
+- **Antigravity IDE** — Google Cloud Code API with protocol-compliant requests
 - **Codex CLI** — OpenAI-compatible API for GPT and Codex models
-
-As an independent developer doing remote freelance work and AI-powered coding coaching, I use AI
-coding tools all day, every day. Agent Vibes was born from the need to unify multiple AI backends
-behind a single proxy — so I can use the most powerful models available, both locally and in the
-cloud, seamlessly switching between Claude Code CLI and Cursor IDE without worrying about which
-backend is serving the requests. My daily driver is **Antigravity IDE Ultra**.
 
 > **Disclaimer:** This project is for educational and research purposes only.
 >
@@ -58,29 +52,30 @@ backend is serving the requests. My daily driver is **Antigravity IDE Ultra**.
 
 ## Features
 
-| Client          | Protocol                             | Backend                    | Models                     |
-| --------------- | ------------------------------------ | -------------------------- | -------------------------- |
-| Claude Code CLI | Anthropic Messages API (SSE)         | Antigravity IDE, Codex CLI | Gemini, Claude, GPT, Codex |
-| Cursor IDE      | ConnectRPC/gRPC (reverse-engineered) | Antigravity IDE, Codex CLI | Gemini, Claude, GPT, Codex |
+| Client          | Protocol                              | Backend                    | Models                     |
+| --------------- | ------------------------------------- | -------------------------- | -------------------------- |
+| Claude Code CLI | Anthropic Messages API (SSE)          | Antigravity IDE, Codex CLI | Gemini, Claude, GPT, Codex |
+| Cursor IDE      | ConnectRPC/gRPC (protocol-compatible) | Antigravity IDE, Codex CLI | Gemini, Claude, GPT, Codex |
 
-## Compared with CLIProxyAPI
+## Compared with [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI)
 
-CLIProxyAPI is the closest reference project for this repo, but the focus is different.
-CLIProxyAPI is primarily API-first and CLI-oriented. Agent Vibes puts its main weight on
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) is the closest reference project for this repo, but the focus is different.
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) is primarily API-first and CLI-oriented. Agent Vibes puts its main weight on
 native client compatibility for Cursor and native upstream fidelity for Antigravity.
 
 - **Cursor:** instead of stopping at OpenAI/Claude-compatible endpoints,
-  Agent Vibes reverse-engineers Cursor's native ConnectRPC/gRPC agent channel,
-  extracts protobuf definitions from Cursor binaries, and implements the
-  streaming tool loop directly.
+  Agent Vibes implements Cursor's native ConnectRPC/gRPC agent channel
+  with protocol-compatible protobuf definitions for interoperability,
+  and implements the streaming tool loop directly.
 - **Antigravity:** this repo's main Antigravity path is a newer
-  worker-native anti-ban-oriented approach, built around running
-  Antigravity's own runtime and modules so Cloud Code requests keep the IDE's
-  native fingerprint, with quota-aware worker rotation around that model.
-- **Implementation:** large parts of the codebase port, transplant, and adapt
-  ideas or source code from CLIProxyAPI and many other open-source projects,
-  then rebuild them in a TypeScript/NestJS architecture. The project itself
-  was put together end-to-end in a vibe-coding workflow.
+  worker-native approach, built around running Antigravity's own runtime
+  and modules so Cloud Code requests stay protocol-compliant,
+  with quota-aware worker rotation around that model.
+- **Credits:** this project ports and adapts code from many open-source projects.
+  The Claude Code CLI and Codex CLI integrations are primarily based on
+  [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI), rebuilt in a
+  TypeScript/NestJS architecture. The Cursor native protocol layer and
+  Antigravity worker pool are original implementations.
 
 ## Quick Start
 
@@ -107,7 +102,7 @@ mkcert -install
 agent-vibes cert
 ```
 
-Sync your Antigravity credentials ([Antigravity IDE](https://antigravity.google) or [Antigravity Manager](https://github.com/lbjlaq/Antigravity-Manager), Pro or Ultra):
+Sync your Antigravity credentials ([Antigravity IDE](https://antigravity.google) or [Antigravity Manager](https://github.com/lbjlaq/Antigravity-Manager)):
 
 ```bash
 agent-vibes sync --ide       # from Antigravity IDE
@@ -142,8 +137,6 @@ agent-vibes forward hosts
 # 2. Enable port forwarding (uses TCP relay on macOS, iptables on Linux, netsh on Windows)
 agent-vibes forward on
 ```
-
-> **Optional:** `agent-vibes patch` patches the Cursor binary for proxy intercept (enables traffic inspection for debugging).
 
 Then start the proxy:
 
@@ -270,7 +263,7 @@ agent-vibes/
 │       │   │
 │       │   └── gen/                           # Auto-generated protobuf (DO NOT edit)
 │       │
-│       ├── proto/                             # Protobuf definitions (from Cursor binary)
+│       ├── proto/                             # Protobuf definitions (protocol-compatible, local only)
 │       └── data/                              # Antigravity OAuth accounts
 ├── packages/
 │   ├── eslint-config/                         # Shared ESLint config
@@ -279,7 +272,6 @@ agent-vibes/
 └── scripts/
     ├── lib/                                   # Shared cross-platform utilities
     ├── accounts/                              # Account credential sync helpers
-    ├── cursor/                                # Cursor patch/debug scripts
     ├── diagnostics/                           # One-click issue report collector
     ├── proxy/                                 # Port forwarding (TCP relay/iptables/netsh)
     └── capture/                               # Traffic capture and dump inspection
@@ -318,8 +310,6 @@ npm run proto:gen              # Generate TypeScript from proto files
 
 ```bash
 npm run cursor:cert            # Generate SSL certificates (mkcert)
-npm run cursor:patch           # Patch Cursor binary for proxy intercept
-npm run cursor:debug           # Debug Cursor connection
 npm run cursor:forward:on      # Enable port forwarding (requires sudo/admin)
 npm run cursor:forward:off     # Disable port forwarding (requires sudo/admin)
 npm run cursor:forward:status  # Show forwarding status

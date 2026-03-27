@@ -2,15 +2,18 @@
 // @generated from file google/protobuf/duration.proto (package google.protobuf, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file google/protobuf/duration.proto.
  */
-export const file_google_protobuf_duration: GenFile = /*@__PURE__*/
-  fileDesc("Ch5nb29nbGUvcHJvdG9idWYvZHVyYXRpb24ucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiIqCghEdXJhdGlvbhIPCgdzZWNvbmRzGAEgASgDEg0KBW5hbm9zGAIgASgFYgZwcm90bzM");
+export const file_google_protobuf_duration: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "Ch5nb29nbGUvcHJvdG9idWYvZHVyYXRpb24ucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiIqCghEdXJhdGlvbhIPCgdzZWNvbmRzGAEgASgDEg0KBW5hbm9zGAIgASgFYgZwcm90bzM"
+  )
 
 /**
  * @generated from message google.protobuf.Duration
@@ -19,18 +22,18 @@ export type Duration = Message<"google.protobuf.Duration"> & {
   /**
    * @generated from field: int64 seconds = 1;
    */
-  seconds: bigint;
+  seconds: bigint
 
   /**
    * @generated from field: int32 nanos = 2;
    */
-  nanos: number;
-};
+  nanos: number
+}
 
 /**
  * Describes the message google.protobuf.Duration.
  * Use `create(DurationSchema)` to create a new message.
  */
-export const DurationSchema: GenMessage<Duration> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_duration, 0);
-
+export const DurationSchema: GenMessage<Duration> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_duration, 0)

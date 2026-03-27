@@ -339,14 +339,13 @@ export function translateCodexSseEvent(
         },
       }
       if (usage.cachedTokens > 0) {
-        ;(messageDelta.usage as Record<string, unknown>).cache_read_input_tokens =
-          usage.cachedTokens
+        ;(
+          messageDelta.usage as Record<string, unknown>
+        ).cache_read_input_tokens = usage.cachedTokens
       }
 
       results.push(formatSseEvent("message_delta", messageDelta))
-      results.push(
-        formatSseEvent("message_stop", { type: "message_stop" })
-      )
+      results.push(formatSseEvent("message_stop", { type: "message_stop" }))
       break
     }
 
@@ -375,9 +374,7 @@ export function translateCodexToClaudeNonStream(
   const response = completedEvent.response as Record<string, unknown>
   if (!response) return null
 
-  const usage = extractResponsesUsage(
-    response.usage as Record<string, unknown>
-  )
+  const usage = extractResponsesUsage(response.usage as Record<string, unknown>)
   const content: ContentBlock[] = []
   let hasToolCall = false
 

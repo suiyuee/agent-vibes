@@ -183,7 +183,8 @@ export class CodexService implements OnModuleInit {
   }
 
   private readModelTierFromLocalAuthFile(): CodexModelTier | null {
-    const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")
+    const codexHome =
+      process.env.CODEX_HOME || path.join(os.homedir(), ".codex")
     const authFile = path.join(codexHome, "auth.json")
 
     try {

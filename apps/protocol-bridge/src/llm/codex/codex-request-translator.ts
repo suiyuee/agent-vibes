@@ -68,10 +68,7 @@ function supportsCodexNoneEffort(modelName: string): boolean {
   return normalized.startsWith("gpt-5.1") || normalized.startsWith("gpt-5.2")
 }
 
-function normalizeDirectCodexEffort(
-  effort: string,
-  modelName: string
-): string {
+function normalizeDirectCodexEffort(effort: string, modelName: string): string {
   const normalized = effort.toLowerCase().trim()
 
   switch (normalized) {
@@ -98,7 +95,8 @@ function convertBudgetToEffort(
 ): string {
   if (budgetTokens < 0) return normalizeDirectCodexEffort("auto", modelName)
   if (budgetTokens === 0) return normalizeDirectCodexEffort("none", modelName)
-  if (budgetTokens <= 512) return normalizeDirectCodexEffort("minimal", modelName)
+  if (budgetTokens <= 512)
+    return normalizeDirectCodexEffort("minimal", modelName)
   if (budgetTokens <= 1024) return "low"
   if (budgetTokens <= 8192) return "medium"
   if (budgetTokens <= 24576) return "high"

@@ -2,15 +2,18 @@
 // @generated from file google/protobuf/value.proto (package google.protobuf, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file google/protobuf/value.proto.
  */
-export const file_google_protobuf_value: GenFile = /*@__PURE__*/
-  fileDesc("Chtnb29nbGUvcHJvdG9idWYvdmFsdWUucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiLqAQoFVmFsdWUSMAoKbnVsbF92YWx1ZRgBIAEoDjIaLmdvb2dsZS5wcm90b2J1Zi5OdWxsVmFsdWVIABIWCgxudW1iZXJfdmFsdWUYAiABKAFIABIWCgxzdHJpbmdfdmFsdWUYAyABKAlIABIUCgpib29sX3ZhbHVlGAQgASgISAASLwoMc3RydWN0X3ZhbHVlGAUgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdEgAEjAKCmxpc3RfdmFsdWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuTGlzdFZhbHVlSABCBgoEa2luZCIzCglMaXN0VmFsdWUSJgoGdmFsdWVzGAEgAygLMhYuZ29vZ2xlLnByb3RvYnVmLlZhbHVlIoQBCgZTdHJ1Y3QSMwoGZmllbGRzGAEgAygLMiMuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdC5GaWVsZHNFbnRyeRpFCgtGaWVsZHNFbnRyeRILCgNrZXkYASABKAkSJQoFdmFsdWUYAiABKAsyFi5nb29nbGUucHJvdG9idWYuVmFsdWU6AjgBKhsKCU51bGxWYWx1ZRIOCgpOVUxMX1ZBTFVFEABiBnByb3RvMw");
+export const file_google_protobuf_value: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "Chtnb29nbGUvcHJvdG9idWYvdmFsdWUucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiLqAQoFVmFsdWUSMAoKbnVsbF92YWx1ZRgBIAEoDjIaLmdvb2dsZS5wcm90b2J1Zi5OdWxsVmFsdWVIABIWCgxudW1iZXJfdmFsdWUYAiABKAFIABIWCgxzdHJpbmdfdmFsdWUYAyABKAlIABIUCgpib29sX3ZhbHVlGAQgASgISAASLwoMc3RydWN0X3ZhbHVlGAUgASgLMhcuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdEgAEjAKCmxpc3RfdmFsdWUYBiABKAsyGi5nb29nbGUucHJvdG9idWYuTGlzdFZhbHVlSABCBgoEa2luZCIzCglMaXN0VmFsdWUSJgoGdmFsdWVzGAEgAygLMhYuZ29vZ2xlLnByb3RvYnVmLlZhbHVlIoQBCgZTdHJ1Y3QSMwoGZmllbGRzGAEgAygLMiMuZ29vZ2xlLnByb3RvYnVmLlN0cnVjdC5GaWVsZHNFbnRyeRpFCgtGaWVsZHNFbnRyeRILCgNrZXkYASABKAkSJQoFdmFsdWUYAiABKAsyFi5nb29nbGUucHJvdG9idWYuVmFsdWU6AjgBKhsKCU51bGxWYWx1ZRIOCgpOVUxMX1ZBTFVFEABiBnByb3RvMw"
+  )
 
 /**
  * @generated from message google.protobuf.Value
@@ -19,51 +22,59 @@ export type Value = Message<"google.protobuf.Value"> & {
   /**
    * @generated from oneof google.protobuf.Value.kind
    */
-  kind: {
-    /**
-     * @generated from field: google.protobuf.NullValue null_value = 1;
-     */
-    value: NullValue;
-    case: "nullValue";
-  } | {
-    /**
-     * @generated from field: double number_value = 2;
-     */
-    value: number;
-    case: "numberValue";
-  } | {
-    /**
-     * @generated from field: string string_value = 3;
-     */
-    value: string;
-    case: "stringValue";
-  } | {
-    /**
-     * @generated from field: bool bool_value = 4;
-     */
-    value: boolean;
-    case: "boolValue";
-  } | {
-    /**
-     * @generated from field: google.protobuf.Struct struct_value = 5;
-     */
-    value: Struct;
-    case: "structValue";
-  } | {
-    /**
-     * @generated from field: google.protobuf.ListValue list_value = 6;
-     */
-    value: ListValue;
-    case: "listValue";
-  } | { case: undefined; value?: undefined };
-};
+  kind:
+    | {
+        /**
+         * @generated from field: google.protobuf.NullValue null_value = 1;
+         */
+        value: NullValue
+        case: "nullValue"
+      }
+    | {
+        /**
+         * @generated from field: double number_value = 2;
+         */
+        value: number
+        case: "numberValue"
+      }
+    | {
+        /**
+         * @generated from field: string string_value = 3;
+         */
+        value: string
+        case: "stringValue"
+      }
+    | {
+        /**
+         * @generated from field: bool bool_value = 4;
+         */
+        value: boolean
+        case: "boolValue"
+      }
+    | {
+        /**
+         * @generated from field: google.protobuf.Struct struct_value = 5;
+         */
+        value: Struct
+        case: "structValue"
+      }
+    | {
+        /**
+         * @generated from field: google.protobuf.ListValue list_value = 6;
+         */
+        value: ListValue
+        case: "listValue"
+      }
+    | { case: undefined; value?: undefined }
+}
 
 /**
  * Describes the message google.protobuf.Value.
  * Use `create(ValueSchema)` to create a new message.
  */
-export const ValueSchema: GenMessage<Value> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_value, 0);
+export const ValueSchema: GenMessage<Value> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_value, 0)
 
 /**
  * @generated from message google.protobuf.ListValue
@@ -72,15 +83,16 @@ export type ListValue = Message<"google.protobuf.ListValue"> & {
   /**
    * @generated from field: repeated google.protobuf.Value values = 1;
    */
-  values: Value[];
-};
+  values: Value[]
+}
 
 /**
  * Describes the message google.protobuf.ListValue.
  * Use `create(ListValueSchema)` to create a new message.
  */
-export const ListValueSchema: GenMessage<ListValue> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_value, 1);
+export const ListValueSchema: GenMessage<ListValue> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_value, 1)
 
 /**
  * @generated from message google.protobuf.Struct
@@ -89,15 +101,16 @@ export type Struct = Message<"google.protobuf.Struct"> & {
   /**
    * @generated from field: map<string, google.protobuf.Value> fields = 1;
    */
-  fields: { [key: string]: Value };
-};
+  fields: { [key: string]: Value }
+}
 
 /**
  * Describes the message google.protobuf.Struct.
  * Use `create(StructSchema)` to create a new message.
  */
-export const StructSchema: GenMessage<Struct> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_value, 2);
+export const StructSchema: GenMessage<Struct> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_value, 2)
 
 /**
  * @generated from enum google.protobuf.NullValue
@@ -112,6 +125,6 @@ export enum NullValue {
 /**
  * Describes the enum google.protobuf.NullValue.
  */
-export const NullValueSchema: GenEnum<NullValue> = /*@__PURE__*/
-  enumDesc(file_google_protobuf_value, 0);
-
+export const NullValueSchema: GenEnum<NullValue> =
+  /*@__PURE__*/
+  enumDesc(file_google_protobuf_value, 0)

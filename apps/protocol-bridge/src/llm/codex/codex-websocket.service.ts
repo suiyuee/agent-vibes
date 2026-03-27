@@ -210,7 +210,8 @@ export class CodexWebSocketService implements OnModuleDestroy {
 
     const proxyAgent = this.buildProxyAgent(wsUrl, proxyUrl)
     if (proxyAgent) {
-      wsOptions.agent = proxyAgent as unknown as WebSocket.ClientOptions["agent"]
+      wsOptions.agent =
+        proxyAgent as unknown as WebSocket.ClientOptions["agent"]
     }
 
     return new Promise<WebSocket>((resolve, reject) => {

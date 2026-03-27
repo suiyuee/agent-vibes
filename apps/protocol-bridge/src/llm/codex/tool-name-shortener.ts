@@ -105,9 +105,7 @@ export function buildReverseMap(
  * short→original mapping for response translation.
  */
 export function buildReverseMapFromClaudeTools(
-  tools:
-    | Array<{ name?: string; type?: string }>
-    | undefined
+  tools: Array<{ name?: string; type?: string }> | undefined
 ): Map<string, string> {
   if (!tools || tools.length === 0) {
     return new Map()

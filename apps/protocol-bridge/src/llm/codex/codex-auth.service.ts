@@ -18,10 +18,7 @@
 
 import { Injectable, Logger } from "@nestjs/common"
 import * as crypto from "crypto"
-import {
-  CodexModelTier,
-  normalizeCodexModelTier,
-} from "../model-registry"
+import { CodexModelTier, normalizeCodexModelTier } from "../model-registry"
 
 // ── OAuth Constants (matching codex_cli_rs) ────────────────────────────
 
@@ -259,9 +256,7 @@ export class CodexAuthService {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       if (attempt > 0) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, attempt * 1000)
-        )
+        await new Promise((resolve) => setTimeout(resolve, attempt * 1000))
       }
 
       try {
@@ -401,9 +396,7 @@ export class CodexAuthService {
         await this.refreshTokensWithRetry(this.tokenData.refreshToken)
         this.logger.log("Token refreshed successfully")
       } catch (e) {
-        this.logger.error(
-          `Token refresh failed: ${(e as Error).message}`
-        )
+        this.logger.error(`Token refresh failed: ${(e as Error).message}`)
         return null
       }
     }

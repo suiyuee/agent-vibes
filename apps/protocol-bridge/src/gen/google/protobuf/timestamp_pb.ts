@@ -2,15 +2,18 @@
 // @generated from file google/protobuf/timestamp.proto (package google.protobuf, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file google/protobuf/timestamp.proto.
  */
-export const file_google_protobuf_timestamp: GenFile = /*@__PURE__*/
-  fileDesc("Ch9nb29nbGUvcHJvdG9idWYvdGltZXN0YW1wLnByb3RvEg9nb29nbGUucHJvdG9idWYiKwoJVGltZXN0YW1wEg8KB3NlY29uZHMYASABKAMSDQoFbmFub3MYAiABKAViBnByb3RvMw");
+export const file_google_protobuf_timestamp: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "Ch9nb29nbGUvcHJvdG9idWYvdGltZXN0YW1wLnByb3RvEg9nb29nbGUucHJvdG9idWYiKwoJVGltZXN0YW1wEg8KB3NlY29uZHMYASABKAMSDQoFbmFub3MYAiABKAViBnByb3RvMw"
+  )
 
 /**
  * @generated from message google.protobuf.Timestamp
@@ -19,18 +22,18 @@ export type Timestamp = Message<"google.protobuf.Timestamp"> & {
   /**
    * @generated from field: int64 seconds = 1;
    */
-  seconds: bigint;
+  seconds: bigint
 
   /**
    * @generated from field: int32 nanos = 2;
    */
-  nanos: number;
-};
+  nanos: number
+}
 
 /**
  * Describes the message google.protobuf.Timestamp.
  * Use `create(TimestampSchema)` to create a new message.
  */
-export const TimestampSchema: GenMessage<Timestamp> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_timestamp, 0);
-
+export const TimestampSchema: GenMessage<Timestamp> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_timestamp, 0)

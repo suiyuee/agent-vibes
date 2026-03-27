@@ -2,26 +2,28 @@
 // @generated from file google/protobuf/empty.proto (package google.protobuf, syntax proto3)
 /* eslint-disable */
 
-import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
-import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
-import type { Message } from "@bufbuild/protobuf";
+import type { GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2"
+import { fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2"
+import type { Message } from "@bufbuild/protobuf"
 
 /**
  * Describes the file google/protobuf/empty.proto.
  */
-export const file_google_protobuf_empty: GenFile = /*@__PURE__*/
-  fileDesc("Chtnb29nbGUvcHJvdG9idWYvZW1wdHkucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiIHCgVFbXB0eWIGcHJvdG8z");
+export const file_google_protobuf_empty: GenFile =
+  /*@__PURE__*/
+  fileDesc(
+    "Chtnb29nbGUvcHJvdG9idWYvZW1wdHkucHJvdG8SD2dvb2dsZS5wcm90b2J1ZiIHCgVFbXB0eWIGcHJvdG8z"
+  )
 
 /**
  * @generated from message google.protobuf.Empty
  */
-export type Empty = Message<"google.protobuf.Empty"> & {
-};
+export type Empty = Message<"google.protobuf.Empty"> & {}
 
 /**
  * Describes the message google.protobuf.Empty.
  * Use `create(EmptySchema)` to create a new message.
  */
-export const EmptySchema: GenMessage<Empty> = /*@__PURE__*/
-  messageDesc(file_google_protobuf_empty, 0);
-
+export const EmptySchema: GenMessage<Empty> =
+  /*@__PURE__*/
+  messageDesc(file_google_protobuf_empty, 0)
