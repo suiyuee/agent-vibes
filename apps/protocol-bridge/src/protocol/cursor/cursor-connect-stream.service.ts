@@ -450,7 +450,8 @@ export class CursorConnectStreamService {
           if (race.result.done) {
             done = true
           } else {
-            yield { type: "data" as const, value: race.result.value }
+            const value = race.result.value ?? ""
+            yield { type: "data" as const, value }
           }
         } else {
           // 超时，发送心跳并继续等待同一个 dataPromise
