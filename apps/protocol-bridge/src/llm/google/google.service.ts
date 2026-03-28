@@ -2980,6 +2980,8 @@ export class GoogleService {
         })
 
         this.logger.log(`Claude response received from Cloud Code API`)
+        // Mark this worker as preferred for future requests with this model
+        this.processPool.markSuccessForModel(resolvedModel)
         return this.convertToAnthropicFormat(data, dto.model)
       } catch (error) {
         const errMsg = (error as Error).message || ""
@@ -3284,6 +3286,8 @@ export class GoogleService {
             onChunkHandler,
             resolvedModel
           )
+          // Mark this worker as preferred for future requests with this model
+          self.processPool.markSuccessForModel(resolvedModel)
           return // success
         } catch (err) {
           const errMsg = (err as Error).message || ""

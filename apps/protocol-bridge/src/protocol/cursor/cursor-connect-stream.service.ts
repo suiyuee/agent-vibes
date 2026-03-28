@@ -5991,10 +5991,15 @@ ${raw}
             continue
           }
           if (sessionBeforeRun && sessionBeforeRun.pendingToolCalls.size > 0) {
-            this.logger.warn(
-              `Received a new chat turn while ${sessionBeforeRun.pendingToolCalls.size} tool result(s) are still pending; waiting for tool results before starting a new model turn`
+            // Stale pending tool calls from a previous (now-closed) BiDi stream.
+            // These tool results will NEVER arrive because the old stream is gone.
+            // Clear them to avoid a permanent dead-lock where the system waits forever.
+            const clearedCount = this.sessionManager.clearStalePendingToolCalls(
+              conversationId!
             )
-            continue
+            this.logger.warn(
+              `Cleared ${clearedCount} stale pending tool call(s) from previous stream; proceeding with new chat turn`
+            )
           }
 
           // Handle run turn with the established conversationId.

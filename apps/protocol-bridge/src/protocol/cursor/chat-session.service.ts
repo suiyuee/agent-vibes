@@ -1362,6 +1362,30 @@ export class ChatSessionManager implements OnModuleDestroy {
   }
 
   /**
+   * Clear all stale pending tool calls from a session.
+   * Used when a new chat turn arrives on a fresh BiDi stream but old pending
+   * tool calls from a previous (now-closed) stream are still lingering.
+   * Returns the number of cleared entries.
+   */
+  clearStalePendingToolCalls(conversationId: string): number {
+    const session = this.getSession(conversationId)
+    if (!session || session.pendingToolCalls.size === 0) return 0
+
+    const count = session.pendingToolCalls.size
+    const clearedIds = Array.from(session.pendingToolCalls.keys())
+
+    session.pendingToolCalls.clear()
+    session.pendingToolCallByExecId.clear()
+    session.lastActivityAt = new Date()
+
+    this.logger.warn(
+      `Cleared ${count} stale pending tool call(s) for session ${conversationId}: ${clearedIds.join(", ")}`
+    )
+    this.schedulePersist(conversationId)
+    return count
+  }
+
+  /**
    * Register an InteractionQuery, returns {id, promise}
    * The promise resolves when the client replies with an InteractionResponse
    */

@@ -119,6 +119,8 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
   private requestCounter = 0
   /** Tracks the worker that most recently executed a request (for precise cooldown targeting) */
   private lastUsedWorker: WorkerHandle | null = null
+  /** Per-model sticky affinity: remember the last worker that succeeded for each model */
+  private readonly preferredWorkerByModel = new Map<string, WorkerHandle>()
   /** Timeout for non-streaming generation (deep thinking models may take long) */
   private readonly GENERATE_TIMEOUT_MS = 3_600_000 // 1 hour
   private antigravityNodeBinary: string | null = null
@@ -658,14 +660,16 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * Get the next available worker (round-robin, cooldown-aware, model-aware)
+   * Get the next available worker (sticky-preferred, then round-robin fallback)
    *
-   * If `model` is provided, also skips workers that are in per-model cooldown
-   * for that model (inspired by CLIProxyAPI's isAuthBlockedForModel).
+   * Selection priority:
+   * 1. Preferred worker for this model (last successful) — if still available
+   * 2. Round-robin across all ready workers, skipping those in cooldown
+   * 3. Fallback: the worker whose cooldown expires soonest
    *
-   * Prefers workers that are ready AND not in any applicable cooldown.
-   * If every ready worker is cooling down, returns the one whose
-   * cooldown expires soonest so the caller can sleep on it.
+   * This avoids pointlessly rotating through all accounts on every request.
+   * A worker stays preferred until it enters cooldown, at which point the
+   * preference is cleared and round-robin takes over.
    */
   private getNextWorker(model?: string): WorkerHandle {
     const now = Date.now()
@@ -674,11 +678,35 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
       throw new Error("No ready workers in the process pool")
     }
 
+    // 1. Try preferred worker for this model (sticky affinity)
+    if (model) {
+      const preferred = this.preferredWorkerByModel.get(model)
+      if (preferred && preferred.ready) {
+        const globalAvailable = preferred.cooldownUntil <= now
+        const modelState = preferred.modelStates.get(model)
+        const modelAvailable = !modelState || modelState.cooldownUntil <= now
+
+        if (globalAvailable && modelAvailable) {
+          // Update currentWorkerIndex to match so round-robin stays coherent
+          const preferredIdx = readyWorkers.indexOf(preferred)
+          if (preferredIdx >= 0) {
+            this.currentWorkerIndex = preferredIdx
+          }
+          return preferred
+        }
+        // Preferred worker is in cooldown — clear preference so we don't
+        // keep checking a stale entry on every request
+        this.preferredWorkerByModel.delete(model)
+      }
+    }
+
+    // 2. Round-robin across all ready workers (offset from 0 to stay on
+    //    the current index if it is still available, avoiding unnecessary skips)
     const startIndex = this.normalizeWorkerIndex(readyWorkers.length)
     let fallbackIndex = startIndex
     let fallbackCooldown = Number.POSITIVE_INFINITY
 
-    for (let offset = 1; offset <= readyWorkers.length; offset++) {
+    for (let offset = 0; offset < readyWorkers.length; offset++) {
       const index = (startIndex + offset) % readyWorkers.length
       const worker = readyWorkers[index]
       if (!worker) continue
@@ -778,6 +806,7 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
    * Inspired by CLIProxyAPI's MarkResult per-model state tracking.
    *
    * The worker may still be available for other models.
+   * Also clears sticky preference so getNextWorker falls through to round-robin.
    */
   setModelCooldownForLastWorker(
     model: string,
@@ -791,6 +820,10 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
       cooldownUntil: now + delayMs,
       quotaExhausted,
     })
+    // Clear sticky preference — this worker is no longer suitable for this model
+    if (this.preferredWorkerByModel.get(model) === worker) {
+      this.preferredWorkerByModel.delete(model)
+    }
     this.logger.warn(
       `[Worker ${worker.account.email}] model ${model} ${
         quotaExhausted ? "quota exhausted" : "rate-limited"
@@ -804,6 +837,19 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
   clearModelCooldownForLastWorker(model: string): void {
     const worker = this.lastUsedWorker
     if (!worker || !model) return
+    worker.modelStates.delete(model)
+  }
+
+  /**
+   * Mark the last-used worker as the preferred (sticky) worker for a model.
+   * Called on successful request completion so subsequent requests reuse the
+   * same worker instead of rotating through all accounts unnecessarily.
+   */
+  markSuccessForModel(model: string): void {
+    const worker = this.lastUsedWorker
+    if (!worker || !model) return
+    this.preferredWorkerByModel.set(model, worker)
+    // Also clear any lingering model cooldown (recovery)
     worker.modelStates.delete(model)
   }
 
