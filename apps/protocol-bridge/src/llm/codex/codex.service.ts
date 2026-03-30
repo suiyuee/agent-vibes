@@ -30,6 +30,10 @@ import { HttpsProxyAgent } from "https-proxy-agent"
 import { SocksProxyAgent } from "socks-proxy-agent"
 import type { CreateMessageDto } from "../../protocol/anthropic/dto/create-message.dto"
 import type { AnthropicResponse } from "../../shared/anthropic"
+import {
+  getAccountConfigPathCandidates,
+  resolveDefaultAccountConfigPath,
+} from "../../shared/protocol-bridge-paths"
 import { CodexModelTier, normalizeCodexModelTier } from "../model-registry"
 import {
   type CooldownableAccount,
@@ -63,11 +67,12 @@ const CODEX_CLIENT_VERSION = "0.101.0"
 const CODEX_USER_AGENT =
   "codex_cli_rs/0.101.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464"
 const DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
-const CODEX_ACCOUNTS_CONFIG_PATHS = [
-  path.resolve("data/codex-accounts.json"),
-  path.resolve("apps/protocol-bridge/data/codex-accounts.json"),
-]
-const CODEX_ACCOUNTS_DEFAULT_PATH = CODEX_ACCOUNTS_CONFIG_PATHS[1]!
+const CODEX_ACCOUNTS_CONFIG_PATHS = getAccountConfigPathCandidates(
+  "codex-accounts.json"
+)
+const CODEX_ACCOUNTS_DEFAULT_PATH = resolveDefaultAccountConfigPath(
+  "codex-accounts.json"
+)
 const CODEX_MODEL_TIER_ORDER: CodexModelTier[] = ["free", "plus", "team", "pro"]
 
 export class CodexApiError extends HttpException {

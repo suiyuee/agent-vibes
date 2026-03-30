@@ -14,9 +14,13 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import * as crypto from "crypto"
 import * as fs from "fs"
-import * as path from "path"
 import type { CreateMessageDto } from "../../protocol/anthropic/dto/create-message.dto"
 import type { AnthropicResponse, ContentBlock } from "../../shared/anthropic"
+import {
+  getAccountConfigPathCandidates,
+  resolveLegacyAccountStatePath as resolveLegacyAccountStateJsonPath,
+  resolveRuntimeDataPath,
+} from "../../shared/protocol-bridge-paths"
 import { translateClaudeToCodex } from "../codex/codex-request-translator"
 import {
   createStreamState as createCodexStreamState,
@@ -29,11 +33,16 @@ import {
   clearAccountDisablement,
   disableAccount,
   isAccountDisabled,
+  getEarliestRecovery,
   markAccountCooldown,
   markAccountSuccess,
   pickAvailableAccount,
-  getEarliestRecovery,
 } from "../shared/account-cooldown"
+import {
+  BACKEND_ACCOUNT_STATE_DB_FILENAME,
+  BackendAccountStateStore,
+  type PersistedBackendAccountState,
+} from "../shared/backend-account-state-store"
 import {
   BackendAccountPoolUnavailableError,
   BackendApiError,
@@ -378,27 +387,7 @@ interface OpenaiCompatAccount extends CooldownableAccount {
   stateKey: string
 }
 
-interface PersistedOpenaiCompatAccountState {
-  stateKey: string
-  label?: string
-  cooldownUntil?: number
-  modelStates?: Array<{
-    model: string
-    cooldownUntil: number
-    quotaExhausted: boolean
-    backoffLevel: number
-  }>
-  disabledAt?: number
-  disabledReason?: string
-  disabledStatusCode?: number
-  disabledMessage?: string
-  updatedAt: number
-}
-
-interface PersistedOpenaiCompatAccountStateFile {
-  version: 1
-  accounts: PersistedOpenaiCompatAccountState[]
-}
+type PersistedOpenaiCompatAccountState = PersistedBackendAccountState
 
 @Injectable()
 export class OpenaiCompatService implements OnModuleInit {
@@ -411,8 +400,16 @@ export class OpenaiCompatService implements OnModuleInit {
   /** Resolved config file path used to load file-backed accounts */
   private accountsConfigPath: string | null = null
   /** Runtime account health state persistence path */
-  private accountStatePath: string = path.resolve(
-    "data/openai-compat-account-state.json"
+  private accountStatePath: string = resolveRuntimeDataPath(
+    BACKEND_ACCOUNT_STATE_DB_FILENAME
+  )
+  /** Legacy JSON state file path kept only for one-time migration */
+  private legacyAccountStatePath: string = resolveLegacyAccountStateJsonPath(
+    "openai-compat-account-state.json"
+  )
+  private accountStateStore = new BackendAccountStateStore(
+    this.accountStatePath,
+    this.logger
   )
 
   /**
@@ -445,15 +442,24 @@ export class OpenaiCompatService implements OnModuleInit {
       .digest("hex")
   }
 
-  private resolveAccountStatePath(configPath?: string | null): string {
-    if (configPath) {
-      return path.resolve(
-        path.dirname(configPath),
-        "openai-compat-account-state.json"
-      )
-    }
+  private resolveAccountStateDbPath(configPath?: string | null): string {
+    return resolveRuntimeDataPath(BACKEND_ACCOUNT_STATE_DB_FILENAME, configPath)
+  }
 
-    return path.resolve("data/openai-compat-account-state.json")
+  private resolveLegacyAccountStatePath(configPath?: string | null): string {
+    return resolveLegacyAccountStateJsonPath(
+      "openai-compat-account-state.json",
+      configPath
+    )
+  }
+
+  private configureAccountStateStore(configPath?: string | null): void {
+    this.accountStatePath = this.resolveAccountStateDbPath(configPath)
+    this.legacyAccountStatePath = this.resolveLegacyAccountStatePath(configPath)
+    this.accountStateStore = new BackendAccountStateStore(
+      this.accountStatePath,
+      this.logger
+    )
   }
 
   private buildAccountRecord(params: {
@@ -496,30 +502,10 @@ export class OpenaiCompatService implements OnModuleInit {
     string,
     PersistedOpenaiCompatAccountState
   > {
-    const result = new Map<string, PersistedOpenaiCompatAccountState>()
-    if (!fs.existsSync(this.accountStatePath)) {
-      return result
-    }
-
-    try {
-      const parsed = JSON.parse(
-        fs.readFileSync(this.accountStatePath, "utf8")
-      ) as Partial<PersistedOpenaiCompatAccountStateFile>
-      const entries = Array.isArray(parsed.accounts) ? parsed.accounts : []
-
-      for (const entry of entries) {
-        if (!entry || typeof entry.stateKey !== "string" || !entry.stateKey) {
-          continue
-        }
-        result.set(entry.stateKey, entry)
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to parse ${this.accountStatePath}: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    return result
+    return this.accountStateStore.loadStates(
+      "openai-compat",
+      this.legacyAccountStatePath
+    )
   }
 
   private applyPersistedAccountState(
@@ -626,26 +612,15 @@ export class OpenaiCompatService implements OnModuleInit {
   }
 
   private persistAccountStates(): void {
-    try {
-      const payload: PersistedOpenaiCompatAccountStateFile = {
-        version: 1,
-        accounts: this.accounts
-          .map((account) => this.serializeAccountState(account))
-          .filter(
-            (account): account is PersistedOpenaiCompatAccountState =>
-              account != null
-          ),
-      }
-
-      fs.mkdirSync(path.dirname(this.accountStatePath), { recursive: true })
-      const tempPath = `${this.accountStatePath}.tmp`
-      fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), "utf8")
-      fs.renameSync(tempPath, this.accountStatePath)
-    } catch (error) {
-      this.logger.warn(
-        `Failed to persist ${this.accountStatePath}: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
+    this.accountStateStore.replaceStates(
+      "openai-compat",
+      this.accounts
+        .map((account) => this.serializeAccountState(account))
+        .filter(
+          (account): account is PersistedOpenaiCompatAccountState =>
+            account != null
+        )
+    )
   }
 
   private buildErrorPreview(detail: string, maxLength: number = 200): string {
@@ -866,9 +841,7 @@ export class OpenaiCompatService implements OnModuleInit {
       }
     }
 
-    this.accountStatePath = this.resolveAccountStatePath(
-      this.accountsConfigPath
-    )
+    this.configureAccountStateStore(this.accountsConfigPath)
     const persistedStates = this.loadPersistedAccountStates()
     for (const account of this.accounts) {
       this.applyPersistedAccountState(
@@ -925,10 +898,9 @@ export class OpenaiCompatService implements OnModuleInit {
    * Load all accounts from openai-compat-accounts.json.
    */
   private loadAllAccountsFromFile(): OpenaiCompatAccount[] {
-    const configPaths = [
-      path.resolve("data/openai-compat-accounts.json"),
-      path.resolve("apps/protocol-bridge/data/openai-compat-accounts.json"),
-    ]
+    const configPaths = getAccountConfigPathCandidates(
+      "openai-compat-accounts.json"
+    )
 
     for (const configPath of configPaths) {
       if (!fs.existsSync(configPath)) continue
@@ -939,7 +911,7 @@ export class OpenaiCompatService implements OnModuleInit {
         }
         if (Array.isArray(data.accounts) && data.accounts.length > 0) {
           this.accountsConfigPath = configPath
-          this.accountStatePath = this.resolveAccountStatePath(configPath)
+          this.configureAccountStateStore(configPath)
           this.logger.log(
             `Loaded ${data.accounts.length} OpenAI-compat account(s) from ${configPath}`
           )

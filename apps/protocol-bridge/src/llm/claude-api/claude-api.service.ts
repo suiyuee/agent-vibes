@@ -2,12 +2,16 @@ import { Injectable, Logger, OnModuleInit } from "@nestjs/common"
 import { ConfigService } from "@nestjs/config"
 import * as crypto from "crypto"
 import * as fs from "fs"
-import * as path from "path"
 import { HttpProxyAgent } from "http-proxy-agent"
 import { HttpsProxyAgent } from "https-proxy-agent"
 import { SocksProxyAgent } from "socks-proxy-agent"
 import type { CreateMessageDto } from "../../protocol/anthropic/dto/create-message.dto"
 import type { AnthropicResponse } from "../../shared/anthropic"
+import {
+  getAccountConfigPathCandidates,
+  resolveLegacyAccountStatePath as resolveLegacyAccountStateJsonPath,
+  resolveRuntimeDataPath,
+} from "../../shared/protocol-bridge-paths"
 import {
   detectModelFamily,
   doesModelIdRequireExplicitThinkingSupport,
@@ -21,6 +25,11 @@ import {
   markAccountCooldown,
   markAccountSuccess,
 } from "../shared/account-cooldown"
+import {
+  BACKEND_ACCOUNT_STATE_DB_FILENAME,
+  BackendAccountStateStore,
+  type PersistedBackendAccountState,
+} from "../shared/backend-account-state-store"
 import {
   BackendAccountPoolUnavailableError,
   BackendApiError,
@@ -60,27 +69,7 @@ interface ClaudeApiCandidate {
   publicModelId: string
 }
 
-interface PersistedClaudeApiAccountState {
-  stateKey: string
-  label?: string
-  cooldownUntil?: number
-  modelStates?: Array<{
-    model: string
-    cooldownUntil: number
-    quotaExhausted: boolean
-    backoffLevel: number
-  }>
-  disabledAt?: number
-  disabledReason?: string
-  disabledStatusCode?: number
-  disabledMessage?: string
-  updatedAt: number
-}
-
-interface PersistedClaudeApiAccountStateFile {
-  version: 1
-  accounts: PersistedClaudeApiAccountState[]
-}
+type PersistedClaudeApiAccountState = PersistedBackendAccountState
 
 interface ClaudeApiAccountFileEntry {
   label?: string
@@ -132,8 +121,15 @@ export class ClaudeApiService implements OnModuleInit {
   private accountIndex = 0
   private forceModelPrefix = false
   private accountsConfigPath: string | null = null
-  private accountStatePath: string = path.resolve(
-    "data/claude-api-account-state.json"
+  private accountStatePath: string = resolveRuntimeDataPath(
+    BACKEND_ACCOUNT_STATE_DB_FILENAME
+  )
+  private legacyAccountStatePath: string = resolveLegacyAccountStateJsonPath(
+    "claude-api-account-state.json"
+  )
+  private accountStateStore = new BackendAccountStateStore(
+    this.accountStatePath,
+    this.logger
   )
 
   constructor(private readonly configService: ConfigService) {}
@@ -181,9 +177,7 @@ export class ClaudeApiService implements OnModuleInit {
       }
     }
 
-    this.accountStatePath = this.resolveAccountStatePath(
-      this.accountsConfigPath
-    )
+    this.configureAccountStateStore(this.accountsConfigPath)
     const persistedStates = this.loadPersistedAccountStates()
     for (const account of this.accounts) {
       this.applyPersistedAccountState(
@@ -698,15 +692,24 @@ export class ClaudeApiService implements OnModuleInit {
     return normalized || DEFAULT_ANTHROPIC_BASE_URL
   }
 
-  private resolveAccountStatePath(configPath?: string | null): string {
-    if (configPath) {
-      return path.resolve(
-        path.dirname(configPath),
-        "claude-api-account-state.json"
-      )
-    }
+  private resolveAccountStateDbPath(configPath?: string | null): string {
+    return resolveRuntimeDataPath(BACKEND_ACCOUNT_STATE_DB_FILENAME, configPath)
+  }
 
-    return path.resolve("data/claude-api-account-state.json")
+  private resolveLegacyAccountStatePath(configPath?: string | null): string {
+    return resolveLegacyAccountStateJsonPath(
+      "claude-api-account-state.json",
+      configPath
+    )
+  }
+
+  private configureAccountStateStore(configPath?: string | null): void {
+    this.accountStatePath = this.resolveAccountStateDbPath(configPath)
+    this.legacyAccountStatePath = this.resolveLegacyAccountStatePath(configPath)
+    this.accountStateStore = new BackendAccountStateStore(
+      this.accountStatePath,
+      this.logger
+    )
   }
 
   private normalizeModels(
@@ -807,10 +810,9 @@ export class ClaudeApiService implements OnModuleInit {
   }
 
   private loadAllAccountsFromFile(): ClaudeApiAccount[] {
-    const configPaths = [
-      path.resolve("data/claude-api-accounts.json"),
-      path.resolve("apps/protocol-bridge/data/claude-api-accounts.json"),
-    ]
+    const configPaths = getAccountConfigPathCandidates(
+      "claude-api-accounts.json"
+    )
 
     for (const configPath of configPaths) {
       if (!fs.existsSync(configPath)) continue
@@ -827,7 +829,7 @@ export class ClaudeApiService implements OnModuleInit {
         }
 
         this.accountsConfigPath = configPath
-        this.accountStatePath = this.resolveAccountStatePath(configPath)
+        this.configureAccountStateStore(configPath)
         this.logger.log(
           `Loaded ${data.accounts.length} Claude API account(s) from ${configPath}`
         )
@@ -866,30 +868,10 @@ export class ClaudeApiService implements OnModuleInit {
     string,
     PersistedClaudeApiAccountState
   > {
-    const result = new Map<string, PersistedClaudeApiAccountState>()
-    if (!fs.existsSync(this.accountStatePath)) {
-      return result
-    }
-
-    try {
-      const parsed = JSON.parse(
-        fs.readFileSync(this.accountStatePath, "utf8")
-      ) as Partial<PersistedClaudeApiAccountStateFile>
-      const entries = Array.isArray(parsed.accounts) ? parsed.accounts : []
-
-      for (const entry of entries) {
-        if (!entry || typeof entry.stateKey !== "string" || !entry.stateKey) {
-          continue
-        }
-        result.set(entry.stateKey, entry)
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to parse ${this.accountStatePath}: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
-
-    return result
+    return this.accountStateStore.loadStates(
+      "claude-api",
+      this.legacyAccountStatePath
+    )
   }
 
   private applyPersistedAccountState(
@@ -984,26 +966,15 @@ export class ClaudeApiService implements OnModuleInit {
   }
 
   private persistAccountStates(): void {
-    try {
-      const payload: PersistedClaudeApiAccountStateFile = {
-        version: 1,
-        accounts: this.accounts
-          .map((account) => this.serializeAccountState(account))
-          .filter(
-            (account): account is PersistedClaudeApiAccountState =>
-              account != null
-          ),
-      }
-
-      fs.mkdirSync(path.dirname(this.accountStatePath), { recursive: true })
-      const tempPath = `${this.accountStatePath}.tmp`
-      fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), "utf8")
-      fs.renameSync(tempPath, this.accountStatePath)
-    } catch (error) {
-      this.logger.warn(
-        `Failed to persist ${this.accountStatePath}: ${error instanceof Error ? error.message : String(error)}`
-      )
-    }
+    this.accountStateStore.replaceStates(
+      "claude-api",
+      this.accounts
+        .map((account) => this.serializeAccountState(account))
+        .filter(
+          (account): account is PersistedClaudeApiAccountState =>
+            account != null
+        )
+    )
   }
 
   private normalizeRequestedModel(model: string): {
