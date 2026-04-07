@@ -1569,10 +1569,7 @@
             ch += '<div class="toggle-track"></div></div>';
           } else if (item.type === 'number') {
             if (item.key === 'port') {
-              ch += '<div style="display:flex;align-items:center;gap:8px">';
-              ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onkeydown="handlePortInputKey(event,this)" />';
-              ch += '<button class="btn btn-secondary" style="padding:4px 10px" onclick="applyNumberSetting(this.previousElementSibling)">Apply</button>';
-              ch += '</div>';
+              ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onkeydown="handlePortInputKey(event,this)" onblur="commitPortSetting(this)" />';
             } else {
               ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onchange="updateNumberSetting(this)" />';
             }
@@ -1631,14 +1628,14 @@
       }
     }
 
-    function applyNumberSetting(el) {
+    function commitPortSetting(el) {
       updateNumberSetting(el);
     }
 
     function handlePortInputKey(event, el) {
       if (event.key === 'Enter') {
         event.preventDefault();
-        applyNumberSetting(el);
+        commitPortSetting(el);
       }
     }
 
