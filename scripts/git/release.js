@@ -120,6 +120,39 @@ function gitOutput(args) {
   return runGit(args, { capture: true }).stdout.trim()
 }
 
+function runGh(args, options = {}) {
+  const result = spawnSync("gh", args, {
+    cwd: ROOT,
+    encoding: "utf8",
+    stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",
+  })
+
+  if (result.error) {
+    throw result.error
+  }
+
+  if (result.status !== 0) {
+    if (options.allowFailure) {
+      return {
+        ok: false,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+      }
+    }
+
+    const detail =
+      (result.stderr || result.stdout || "").trim() ||
+      `gh ${args.join(" ")} exited with code ${result.status}`
+    throw new Error(detail)
+  }
+
+  return {
+    ok: true,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+  }
+}
+
 function currentBranch() {
   return gitOutput(["branch", "--show-current"])
 }
@@ -159,6 +192,13 @@ function runNode(scriptPath) {
 
 function syncReleaseDocs() {
   runNode(path.join("apps", "vscode-extension", "scripts", "sync-readme.mjs"))
+}
+
+function cleanupExistingRelease(tag, remote) {
+  step(`Cleaning up existing release/tag ${tag}`)
+  runGh(["release", "delete", tag, "--yes"], { allowFailure: true })
+  runGit(["tag", "-d", tag], { allowFailure: true })
+  runGit(["push", remote, `:refs/tags/${tag}`], { allowFailure: true })
 }
 
 /**
@@ -276,6 +316,10 @@ function main() {
 
     // ── Tag and push ─────────────────────────────────────────────────
     if (!args.noTag && tag) {
+      if (args.bump === "current") {
+        cleanupExistingRelease(tag, remote)
+      }
+
       step(`Creating tag ${tag}`)
       runGit(["tag", "-a", tag, "-m", `Release ${tag}`])
 
