@@ -29,6 +29,7 @@ export async function activate(
   bridge = new BridgeManager(config, context.extensionPath)
   network = new NetworkManager()
   network.setExtensionPath(context.extensionPath)
+  network.setPort(config.port)
   const cert = new CertManager(config)
 
   // Create UI
@@ -41,6 +42,58 @@ export async function activate(
 
   // Register all commands
   registerCommands(context, bridge, config, cert, network)
+
+  let currentPort = config.port
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (!event.affectsConfiguration("agentVibes.port")) return
+
+      const nextPort = config.port
+      if (nextPort === currentPort) return
+
+      const previousPort = currentPort
+      currentPort = nextPort
+      network?.setPort(nextPort)
+
+      logger.info(`Agent Vibes port changed: ${previousPort} → ${nextPort}`)
+
+      const bridgeRunning = bridge?.isRunning ?? false
+      const forwardingActive = network?.isForwardingActive() ?? false
+
+      try {
+        if (bridgeRunning) {
+          statusIndicator?.showBusy(
+            "Restarting…",
+            `Agent Vibes — Restarting bridge on port ${nextPort}`
+          )
+          await bridge?.restart()
+          logger.info(`Bridge restarted on new port ${nextPort}`)
+        }
+      } catch (error) {
+        statusIndicator?.clearBusy()
+        const message = error instanceof Error ? error.message : String(error)
+        logger.error(`Failed to restart bridge after port change`, error)
+        void vscode.window.showErrorMessage(
+          `Agent Vibes failed to restart on port ${nextPort}: ${message}`
+        )
+        return
+      }
+
+      if (forwardingActive && network) {
+        statusIndicator?.showBusy(
+          "Reconfiguring…",
+          `Agent Vibes — Reconfiguring forwarding for port ${nextPort}`
+        )
+        executePrivileged(
+          network.getReconfigureCommand(previousPort),
+          "Agent Vibes — Reconfigure Forwarding"
+        )
+        setTimeout(() => statusIndicator?.clearBusy(), 8000)
+      } else {
+        statusIndicator?.clearBusy()
+      }
+    })
+  )
 
   // Push disposables
   context.subscriptions.push({

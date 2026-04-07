@@ -32,7 +32,7 @@ export const CMD = {
 
 // Default configuration values
 export const DEFAULTS = {
-  PORT: 8000,
+  PORT: 2026,
   HEALTH_CHECK_INTERVAL: 30, // seconds
   LOOPBACK_IP: "127.0.0.2",
   FROM_PORT: 443,

@@ -16,7 +16,7 @@ const PID_FILE =
  *
  * Delegates to the bundled `scripts/setup-forwarding.js` for the heavy lifting:
  *   - lo0 alias (127.0.0.2)
- *   - TCP relay (127.0.0.2:443 → 127.0.0.1:8000)
+ *   - TCP relay (127.0.0.2:443 → 127.0.0.1:<configured port>)
  *   - /etc/hosts entries
  *   - proxy bypass settings
  *
@@ -24,6 +24,7 @@ const PID_FILE =
  */
 export class NetworkManager {
   private extensionPath: string | null = null
+  private _port: number = 2026
 
   /**
    * Set the extension path so we can find the bundled scripts.
@@ -31,6 +32,14 @@ export class NetworkManager {
    */
   setExtensionPath(extPath: string): void {
     this.extensionPath = extPath
+  }
+
+  /**
+   * Set the bridge port so forwarding targets the correct destination.
+   * Called from extension.ts after config is available.
+   */
+  setPort(port: number): void {
+    this._port = port
   }
 
   /**
@@ -43,28 +52,51 @@ export class NetworkManager {
     return path.join(this.extensionPath, "scripts", "setup-forwarding.js")
   }
 
+  private buildForwardingCommand(
+    mode: "on" | "off" | "status",
+    port: number
+  ): string {
+    const script = this.forwardingScript
+    return `node "${script}" ${mode} --port=${port}`
+  }
+
   /**
    * Build the sudo command string to enable forwarding.
    */
   getEnableCommand(): string {
-    const script = this.forwardingScript
-    return `node "${script}" on`
+    return this.buildForwardingCommand("on", this._port)
   }
 
   /**
    * Build the sudo command string to disable forwarding.
    */
   getDisableCommand(): string {
-    const script = this.forwardingScript
-    return `node "${script}" off`
+    return this.buildForwardingCommand("off", this._port)
+  }
+
+  /**
+   * Build a command that reconfigures forwarding from a previous port to the
+   * currently configured port in one elevated shell session.
+   */
+  getReconfigureCommand(previousPort: number): string {
+    const disable = this.buildForwardingCommand("off", previousPort)
+    const enable = this.buildForwardingCommand("on", this._port)
+
+    if (process.platform === "win32") {
+      return `${disable} && ${enable}`
+    }
+
+    const escapeSingleQuotes = (value: string): string =>
+      value.replace(/'/g, `'\\''`)
+
+    return `sh -c '${escapeSingleQuotes(disable)} && ${escapeSingleQuotes(enable)}'`
   }
 
   /**
    * Build the command string to check status (no sudo needed).
    */
   getStatusCommand(): string {
-    const script = this.forwardingScript
-    return `node "${script}" status`
+    return this.buildForwardingCommand("status", this._port)
   }
 
   /**
@@ -73,6 +105,25 @@ export class NetworkManager {
    */
   isForwardingActive(): boolean {
     return this.hasHostEntries() && this.isRelayRunning()
+  }
+
+  /**
+   * Poll until forwarding becomes active or timeout elapses.
+   */
+  async waitForForwardingActive(
+    timeoutMs: number = 30000,
+    intervalMs: number = 2000
+  ): Promise<boolean> {
+    const startedAt = Date.now()
+
+    while (Date.now() - startedAt < timeoutMs) {
+      if (this.isForwardingActive()) {
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    }
+
+    return this.isForwardingActive()
   }
 
   /**

@@ -43,7 +43,7 @@ export class ConfigManager {
   get port(): number {
     return (
       vscode.workspace.getConfiguration("agentVibes").get<number>("port") ??
-      8000
+      2026
     )
   }
 

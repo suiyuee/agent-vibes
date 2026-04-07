@@ -98,6 +98,29 @@ export function registerCommands(
   cert: CertManager,
   network: NetworkManager
 ): void {
+  const FORWARDING_RELOAD_PROMPTED_KEY = "agentVibes.forwardingReloadPrompted"
+
+  const promptReloadAfterForwardingEnabled = async (): Promise<void> => {
+    if (context.globalState.get<boolean>(FORWARDING_RELOAD_PROMPTED_KEY)) {
+      return
+    }
+
+    const becameActive = await network.waitForForwardingActive()
+    if (!becameActive) return
+
+    await context.globalState.update(FORWARDING_RELOAD_PROMPTED_KEY, true)
+
+    const action = await vscode.window.showInformationMessage(
+      "Forwarding is enabled. Fully restart Cursor to apply DNS/hosts changes.",
+      "Quit Cursor Now",
+      "Later"
+    )
+
+    if (action === "Quit Cursor Now") {
+      await vscode.commands.executeCommand("workbench.action.quit")
+    }
+  }
+
   // ── Server lifecycle ──────────────────────────────────────────────
 
   context.subscriptions.push(
@@ -118,6 +141,7 @@ export function registerCommands(
           network.getEnableCommand(),
           "Agent Vibes — Enable Forwarding"
         )
+        void promptReloadAfterForwardingEnabled()
       }
     })
   )
@@ -364,10 +388,16 @@ export function registerCommands(
 
   context.subscriptions.push(
     vscode.commands.registerCommand(CMD.ENABLE_FORWARDING, () => {
+      if (network.isForwardingActive()) {
+        vscode.window.showInformationMessage("Forwarding is already active.")
+        return
+      }
+
       executePrivileged(
         network.getEnableCommand(),
         "Agent Vibes — Enable Forwarding"
       )
+      void promptReloadAfterForwardingEnabled()
     })
   )
 

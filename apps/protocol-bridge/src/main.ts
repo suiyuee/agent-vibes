@@ -238,7 +238,7 @@ async function bootstrap() {
     SwaggerModule.setup("docs", app, document)
   }
 
-  const port = process.env.PORT || 8000
+  const port = process.env.PORT || 2026
   await app.listen(port, "0.0.0.0")
 
   const protocol = useHttp2 ? "https" : "http"

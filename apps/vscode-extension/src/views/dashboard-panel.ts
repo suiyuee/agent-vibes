@@ -590,18 +590,6 @@ export class DashboardPanel {
       const num = Number(value)
       if (!isNaN(num)) {
         await config.update(key, num, vscode.ConfigurationTarget.Global)
-
-        if (key === "port") {
-          const action = await vscode.window.showInformationMessage(
-            `Port changed to ${num}. Restart bridge to apply?`,
-            "Restart",
-            "Later"
-          )
-          if (action === "Restart") {
-            await this.bridge.restart()
-          }
-        }
-
         this.sendAllData()
       }
     } else if (allowedStrings.has(key)) {

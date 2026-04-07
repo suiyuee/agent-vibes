@@ -560,7 +560,7 @@
         <div class="section-head">
           <span class="section-title">Accounts</span>
           <div style="display:flex;gap:var(--sp-2);align-items:center">
-            <button class="btn btn-ghost" onclick="refreshPoolStatus()" title="Refresh Status">Refresh</button>
+            <button class="btn btn-ghost" onclick="refreshPoolStatus(true)" title="Refresh Status">Refresh</button>
           </div>
         </div>
         <div id="pool-summary" style="margin-bottom:var(--sp-4)"></div>
@@ -747,7 +747,7 @@
         const pane = document.getElementById('pane-' + t.dataset.tab);
         pane.classList.add('active');
         if (t.dataset.tab === 'logs') refreshLogs();
-        if (t.dataset.tab === 'accounts') { refreshPoolStatus(); }
+        if (t.dataset.tab === 'accounts') { refreshPoolStatus(false); }
         if (t.dataset.tab === 'analytics') refreshUsageSummary();
       });
     });
@@ -784,6 +784,13 @@
     setTimeout(function() {
       refreshPoolStatus();
     }, 0);
+
+    // Prefetch Codex quota shortly after initial render so switching to the
+    // Codex account view reuses warm cached data instead of repainting empty
+    // rows and then filling them in.
+    setTimeout(function() {
+      refreshCodexQuota(false);
+    }, 150);
 
     var lastStatusData = null;
     var ACTION_META = {
@@ -1157,6 +1164,9 @@
         idx++;
       }
       renderChannelDetail();
+      if (channel === 'codex' && (!codexQuotaData || !codexQuotaData.accounts || !codexQuotaData.accounts.length)) {
+        refreshCodexQuota(false);
+      }
     }
 
     function getPoolEntry(channel, index) {
@@ -1209,7 +1219,7 @@
     }
 
     function getCodexQuotaAccount(acct, poolEntry) {
-      if (!codexQuotaData || !codexQuotaData.accounts) return null;
+      if (!codexQuotaData || !codexQuotaData.accounts) return (poolEntry && poolEntry.rateLimits) ? poolEntry : null;
       var acctEmail = acct && acct.email ? String(acct.email).toLowerCase() : '';
       var acctId = acct && acct.accountId ? String(acct.accountId) : '';
       var poolLabel = poolEntry && poolEntry.label ? String(poolEntry.label) : '';
@@ -1222,6 +1232,123 @@
         if (poolLabel && item && item.label === poolLabel) return item;
       }
       return (poolEntry && poolEntry.rateLimits) ? poolEntry : null;
+    }
+
+    var codexQuotaStatus = {
+      loading: false,
+      hasData: false,
+      lastUpdatedAt: null,
+      lastErrorAt: null,
+    };
+
+    function formatElapsedSince(value) {
+      var date = parseDateValue(value);
+      if (!date) return '--';
+      var diffMs = Math.max(0, Date.now() - date.getTime());
+      var sec = Math.round(diffMs / 1000);
+      if (sec < 5) return 'just now';
+      if (sec < 60) return sec + 's ago';
+      var min = Math.round(sec / 60);
+      if (min < 60) return min + 'm ago';
+      var hr = Math.round(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      var day = Math.round(hr / 24);
+      return day + 'd ago';
+    }
+
+    function getCodexQuotaTimestamp(data) {
+      if (data && data.timestamp) return data.timestamp;
+      if (!data || !data.accounts) return null;
+      var latest = null;
+      for (var i = 0; i < data.accounts.length; i++) {
+        var item = data.accounts[i];
+        var updatedAt = item && item.rateLimits ? item.rateLimits.updatedAt : null;
+        var parsed = parseDateValue(updatedAt);
+        if (parsed && (!latest || parsed.getTime() > latest.getTime())) {
+          latest = parsed;
+        }
+      }
+      return latest ? latest.toISOString() : null;
+    }
+
+    function buildCodexQuotaRefreshHtml() {
+      if (selectedChannel !== 'codex' || codexSubView !== 'accounts') return '';
+      var tone = 'var(--fg-2)';
+      var parts = [];
+      if (codexQuotaStatus.loading && codexQuotaData && codexQuotaStatus.hasData) {
+        tone = 'var(--warn)';
+        parts.push('Refreshing quota');
+        parts.push('showing cached data');
+      } else if (codexQuotaStatus.loading) {
+        parts.push('Loading quota');
+      } else if (codexQuotaStatus.lastUpdatedAt) {
+        parts.push('Quota updated ' + formatElapsedSince(codexQuotaStatus.lastUpdatedAt));
+      } else if (codexQuotaStatus.lastErrorAt && codexQuotaData) {
+        tone = 'var(--warn)';
+        parts.push('Using cached quota');
+      } else if (codexQuotaStatus.lastErrorAt) {
+        tone = 'var(--bad)';
+        parts.push('Quota unavailable');
+      } else {
+        tone = 'var(--fg-3)';
+        parts.push('Quota not loaded yet');
+      }
+      return '<div id="codex-quota-refresh-hint" style="margin-top:var(--sp-2);font-size:var(--text-xs);color:' + tone + '">' + esc(parts.join(' · ')) + '</div>';
+    }
+
+    function updateCodexQuotaRefreshHint() {
+      var el = document.getElementById('codex-quota-refresh-hint');
+      if (el) {
+        el.outerHTML = buildCodexQuotaRefreshHtml();
+      }
+    }
+
+    function renderCodexRateLimitRows(codexQuotaAcct) {
+      if (!codexQuotaAcct || !codexQuotaAcct.rateLimits) return '';
+      var rl = codexQuotaAcct.rateLimits;
+      var limits = [];
+      var h = '';
+      if (rl.primary) limits.push({ label: '5h limit', data: rl.primary, color: '#4fc3f7' });
+      if (rl.secondary) limits.push({ label: 'Weekly limit', data: rl.secondary, color: '#81c784' });
+      for (var li = 0; li < limits.length; li++) {
+        var lim = limits[li];
+        var leftPct = Math.max(0, +(100 - lim.data.usedPercent).toFixed(1));
+        var leftWidth = Math.max(0, Math.min(100, leftPct));
+        var resetInfo = '';
+        if (lim.data.resetsAt) {
+          var resetDate = parseDateValue(lim.data.resetsAt);
+          if (resetDate) {
+            var resetHH = String(resetDate.getHours()).padStart(2, '0');
+            var resetMM = String(resetDate.getMinutes()).padStart(2, '0');
+            var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+            resetInfo = ' (resets ' + resetHH + ':' + resetMM + ' on ' + resetDate.getDate() + ' ' + months[resetDate.getMonth()] + ')';
+          }
+        }
+        h += '<div style="margin-top:var(--sp-2)">';
+        h += '<div style="display:flex;justify-content:space-between;font-size:var(--text-xs);color:var(--fg-2);margin-bottom:3px">';
+        h += '<span>' + esc(lim.label) + '</span>';
+        h += '<span>' + esc(leftPct + '% left') + esc(resetInfo) + '</span>';
+        h += '</div>';
+        h += '<div class="progress-track" style="height:5px"><div class="progress-fill" style="width:' + leftWidth + '%;background:' + lim.color + '"></div></div>';
+        h += '</div>';
+      }
+      return h;
+    }
+
+    function patchVisibleCodexQuota() {
+      if (selectedChannel !== 'codex' || codexSubView !== 'accounts' || !allData) return false;
+      var nodes = document.querySelectorAll('[data-codex-quota-index]');
+      if (!nodes || !nodes.length) return false;
+      var state = getChannelState(allData, 'codex');
+      nodes.forEach(function(node) {
+        var idx = Number(node.getAttribute('data-codex-quota-index'));
+        var acct = state.accounts[idx];
+        var poolEntry = getPoolEntry('codex', idx);
+        var codexQuotaAcct = acct ? getCodexQuotaAccount(acct, poolEntry) : null;
+        node.innerHTML = renderCodexRateLimitRows(codexQuotaAcct);
+      });
+      updateCodexQuotaRefreshHint();
+      return true;
     }
 
     // Key models to display for Antigravity accounts
@@ -1269,6 +1396,7 @@
         h += '<span>' + esc(state.filePath) + '</span>';
         h += '</div>';
       }
+      h += buildCodexQuotaRefreshHtml();
       // Action bar — sync buttons + add
       h += '<div style="display:flex;gap:var(--sp-2);margin-top:var(--sp-3)">';
       if (d.sync && d.sync.length > 0) {
@@ -1325,6 +1453,7 @@
           var codexQuotaAcct = (selectedChannel === 'codex') ? getCodexQuotaAccount(acct, poolEntry) : null;
 
           h += '<div style="padding:var(--sp-3) 0">';
+          h += '<div data-codex-account-index="' + i + '">';
 
           // Account row: left=info, right=remove
           h += '<div style="display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)">';
@@ -1371,35 +1500,13 @@
 
           // Rate limit bars for Codex — prefer live pool status data, fall back
           // to the dedicated quota endpoint payload if present.
-          if (selectedChannel === 'codex' && codexQuotaAcct && codexQuotaAcct.rateLimits) {
-            var rl = codexQuotaAcct.rateLimits;
-            var limits = [];
-            if (rl.primary) limits.push({ label: '5h limit', data: rl.primary, color: '#4fc3f7' });
-            if (rl.secondary) limits.push({ label: 'Weekly limit', data: rl.secondary, color: '#81c784' });
-            for (var li = 0; li < limits.length; li++) {
-              var lim = limits[li];
-              var leftPct = Math.max(0, +(100 - lim.data.usedPercent).toFixed(1));
-              var leftWidth = Math.max(0, Math.min(100, leftPct));
-              var resetInfo = '';
-              if (lim.data.resetsAt) {
-                var resetDate = parseDateValue(lim.data.resetsAt);
-                if (resetDate) {
-                  var resetHH = String(resetDate.getHours()).padStart(2, '0');
-                  var resetMM = String(resetDate.getMinutes()).padStart(2, '0');
-                  var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-                  resetInfo = ' (resets ' + resetHH + ':' + resetMM + ' on ' + resetDate.getDate() + ' ' + months[resetDate.getMonth()] + ')';
-                }
-              }
-              h += '<div style="margin-top:var(--sp-2)">';
-              h += '<div style="display:flex;justify-content:space-between;font-size:var(--text-xs);color:var(--fg-2);margin-bottom:3px">';
-              h += '<span>' + esc(lim.label) + '</span>';
-              h += '<span>' + esc(leftPct + '% left') + esc(resetInfo) + '</span>';
-              h += '</div>';
-              h += '<div class="progress-track" style="height:5px"><div class="progress-fill" style="width:' + leftWidth + '%;background:' + lim.color + '"></div></div>';
-              h += '</div>';
-            }
+          if (selectedChannel === 'codex') {
+            h += '<div data-codex-quota-index="' + i + '">';
+            h += renderCodexRateLimitRows(codexQuotaAcct);
+            h += '</div>';
           }
 
+          h += '</div>';
           h += '</div>';
         }
 
@@ -1461,7 +1568,14 @@
             ch += '<span class="toggle-label">' + (on ? 'On' : 'Off') + '</span>';
             ch += '<div class="toggle-track"></div></div>';
           } else if (item.type === 'number') {
-            ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onchange="updateNumberSetting(this)" />';
+            if (item.key === 'port') {
+              ch += '<div style="display:flex;align-items:center;gap:8px">';
+              ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onkeydown="handlePortInputKey(event,this)" />';
+              ch += '<button class="btn btn-secondary" style="padding:4px 10px" onclick="applyNumberSetting(this.previousElementSibling)">Apply</button>';
+              ch += '</div>';
+            } else {
+              ch += '<input class="setting-input" type="number" value="' + esc(item.value) + '" data-key="' + esc(item.key) + '" onchange="updateNumberSetting(this)" />';
+            }
           } else if (item.type === 'select') {
             ch += '<select class="setting-input" data-key="' + esc(item.key) + '" onchange="updateStringSetting(this)">';
             if (item.options) {
@@ -1514,6 +1628,17 @@
       var val = parseInt(el.value, 10);
       if (!isNaN(val)) {
         vscode.postMessage({ type: 'updateSetting', key: key, value: val });
+      }
+    }
+
+    function applyNumberSetting(el) {
+      updateNumberSetting(el);
+    }
+
+    function handlePortInputKey(event, el) {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyNumberSetting(el);
       }
     }
 
@@ -2093,10 +2218,16 @@
       claudeApi: 'claude-api',
     };
 
-    function refreshPoolStatus() {
+    function refreshCodexQuota(force) {
+      codexQuotaStatus.loading = true;
+      updateCodexQuotaRefreshHint();
+      vscode.postMessage({ type: 'getCodexQuota', data: { force: !!force } });
+    }
+
+    function refreshPoolStatus(forceCodexQuota) {
       vscode.postMessage({ type: 'getPoolStatus' });
       vscode.postMessage({ type: 'getGoogleQuota' });
-      vscode.postMessage({ type: 'getCodexQuota', data: { force: true } });
+      refreshCodexQuota(!!forceCodexQuota);
     }
 
     function stateDotCls(state) {
@@ -2181,7 +2312,18 @@
     }
 
     function renderCodexQuota(data) {
-      codexQuotaData = data;
+      codexQuotaStatus.loading = false;
+      if (data && data.accounts) {
+        codexQuotaData = data;
+        codexQuotaStatus.hasData = true;
+        codexQuotaStatus.lastUpdatedAt = getCodexQuotaTimestamp(data) || new Date().toISOString();
+      } else {
+        codexQuotaStatus.lastErrorAt = new Date().toISOString();
+      }
+      if (patchVisibleCodexQuota()) {
+        renderOverviewHealth();
+        return;
+      }
       renderChannelDetail();
       renderOverviewHealth();
     }

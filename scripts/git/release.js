@@ -288,13 +288,7 @@ function main() {
 
       const statusAfterSync = gitOutput(["status", "--porcelain"])
       if (statusAfterSync) {
-        runGit([
-          "add",
-          EXT_PKG,
-          "README.md",
-          "README_zh.md",
-          path.join("apps", "vscode-extension", "README.md"),
-        ])
+        runGit(["add", EXT_PKG, "README.md", "README_zh.md"])
         runGit(["commit", "-m", `chore: release ${tag}`], { capture: true })
       }
     }

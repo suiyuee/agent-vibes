@@ -99,7 +99,7 @@ function resolveConfig() {
     typeof settings["agentVibes.port"] === "number" &&
     Number.isFinite(settings["agentVibes.port"])
       ? settings["agentVibes.port"]
-      : 8000
+      : 2026
 
   const env = {
     PORT: String(port),

@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Cursor API5 Agent → localhost:8000 forwarding (cross-platform)
+ * Cursor API5 Agent → localhost:2026 forwarding (cross-platform)
  *
  * How it works:
  *   1. /etc/hosts (or equivalent) resolves agent domains to 127.0.0.2
  *   2. A platform-specific local forwarding backend redirects
- *      127.0.0.2:443 → 127.0.0.1:8000
+ *      127.0.0.2:443 → 127.0.0.1:2026
  *
  * Backends:
  *   macOS  — lo0 alias + local TCP relay
@@ -17,6 +17,9 @@
  *   node setup-forwarding.js off      Disable forwarding (requires root/admin)
  *   node setup-forwarding.js status   Show status
  *   node setup-forwarding.js hosts    Print /etc/hosts entries
+ *
+ * Options:
+ *   --port=XXXX   Bridge port to forward to (default: 2026)
  */
 
 const { execSync, spawnSync } = require("child_process")
@@ -26,7 +29,14 @@ const platform = require("./platform")
 
 const LOOPBACK_IP = "127.0.0.2"
 const FROM_PORT = 443
-const TO_PORT = 8000
+// Accept --port=XXXX from CLI; fall back to 2026
+const TO_PORT = (() => {
+  for (const arg of process.argv) {
+    const match = /^--port=(\d+)$/.exec(arg)
+    if (match) return parseInt(match[1])
+  }
+  return 2026
+})()
 
 // Cursor agent domains to redirect
 const HOST_DOMAINS = [
