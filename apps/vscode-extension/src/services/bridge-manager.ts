@@ -1,5 +1,5 @@
 import * as vscode from "vscode"
-import { ChildProcess, spawn, execSync } from "child_process"
+import { ChildProcess, spawn } from "child_process"
 import * as path from "path"
 import * as fs from "fs"
 import * as os from "os"
@@ -330,7 +330,7 @@ export class BridgeManager extends EventEmitter {
 
     // 3. Check global install directory ~/.agent-vibes/bin/
     const globalBin = path.join(
-      require("os").homedir(),
+      os.homedir(),
       ".agent-vibes",
       "bin",
       `agent-vibes-bridge${ext}`
@@ -407,17 +407,19 @@ export class BridgeManager extends EventEmitter {
     const interval = this.config.healthCheckInterval
     if (interval <= 0) return
 
-    this.healthCheckTimer = setInterval(async () => {
-      const ok = await this.httpsHealthCheck()
-      if (!ok && this._state === "running") {
-        logger.warn(
-          "Health check failed: HTTPS connection failed (check TLS trust)"
-        )
-        this.setState("error")
-      } else if (ok && this._state === "error") {
-        logger.info("Health check recovered")
-        this.setState("running")
-      }
+    this.healthCheckTimer = setInterval(() => {
+      void (async () => {
+        const ok = await this.httpsHealthCheck()
+        if (!ok && this._state === "running") {
+          logger.warn(
+            "Health check failed: HTTPS connection failed (check TLS trust)"
+          )
+          this.setState("error")
+        } else if (ok && this._state === "error") {
+          logger.info("Health check recovered")
+          this.setState("running")
+        }
+      })()
     }, interval * 1000)
   }
 

@@ -20,11 +20,11 @@ export class CertManager {
    * Generate Root CA + Server certificate with all Cursor domains.
    * Everything is pure JS — zero external tool dependencies.
    */
-  async generateCertificates(): Promise<{
+  generateCertificates(): {
     ca: string
     cert: string
     key: string
-  }> {
+  } {
     logger.info("Generating SSL certificates with node-forge...")
 
     // ── 1. Root CA ─────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ export class CertManager {
 
     // Build SAN list: all Cursor domains + prefixes + IPs
 
-    const altNames: any[] = [
+    const altNames: Array<{ type: number; value?: string; ip?: string }> = [
       { type: 2, value: "localhost" },
       { type: 7, ip: "127.0.0.1" },
       { type: 7, ip: "127.0.0.2" },

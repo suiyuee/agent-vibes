@@ -7,7 +7,7 @@ import { CertManager } from "./services/cert-manager"
 import { StatusIndicator } from "./views/status-indicator"
 import { registerCommands } from "./commands"
 import { executePrivileged } from "./utils/terminal"
-import { CMD } from "./constants"
+import { CMD, type ServerState } from "./constants"
 
 // Singleton references for cleanup
 let bridge: BridgeManager | null = null
@@ -35,7 +35,7 @@ export async function activate(
   statusIndicator = new StatusIndicator()
 
   // Update status bar when server state changes
-  bridge.on("stateChanged", (state) => {
+  bridge.on("stateChanged", (state: ServerState) => {
     statusIndicator?.update(state)
   })
 

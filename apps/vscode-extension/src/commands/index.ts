@@ -182,7 +182,9 @@ export function registerCommands(
           return
         }
 
-        const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"))
+        const index = JSON.parse(fs.readFileSync(indexPath, "utf-8")) as {
+          accounts?: Array<{ id?: string }>
+        }
         if (!Array.isArray(index.accounts) || index.accounts.length === 0) {
           vscode.window.showWarningMessage("No accounts in Antigravity Tools")
           return
@@ -195,7 +197,15 @@ export function registerCommands(
           if (!fs.existsSync(accountPath)) continue
 
           try {
-            const file = JSON.parse(fs.readFileSync(accountPath, "utf-8"))
+            const file = JSON.parse(fs.readFileSync(accountPath, "utf-8")) as {
+              email?: string
+              token?: {
+                access_token?: string
+                refresh_token?: string
+                expiry_timestamp?: number
+                project_id?: string
+              }
+            }
             const token = file.token
             if (!token?.access_token || !token?.refresh_token) continue
 
@@ -264,9 +274,9 @@ export function registerCommands(
   )
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD.SYNC_CLAUDE, async () => {
+    vscode.commands.registerCommand(CMD.SYNC_CLAUDE, () => {
       try {
-        const result = await syncClaudeAccount(config)
+        const result = syncClaudeAccount(config)
         logger.info(result.summary)
         vscode.window.showInformationMessage(
           `${result.summary} → ${path.basename(result.destinationPath)}`
@@ -281,9 +291,9 @@ export function registerCommands(
   )
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD.SYNC_CODEX, async () => {
+    vscode.commands.registerCommand(CMD.SYNC_CODEX, () => {
       try {
-        const result = await syncCodexAccount(config)
+        const result = syncCodexAccount(config)
         logger.info(result.summary)
         vscode.window.showInformationMessage(
           `${result.summary} → ${path.basename(result.destinationPath)}`
@@ -303,7 +313,7 @@ export function registerCommands(
     vscode.commands.registerCommand(CMD.GENERATE_CERT, async () => {
       try {
         // Step 1: Generate certificates (pure JS, no sudo)
-        await cert.generateCertificates()
+        cert.generateCertificates()
         logger.info("SSL certificates generated")
 
         // Step 2: Check if trust is FULLY configured (both system + Node.js)
@@ -353,7 +363,7 @@ export function registerCommands(
   // ── TCP relay forwarding ─────────────────────────────────────────
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD.ENABLE_FORWARDING, async () => {
+    vscode.commands.registerCommand(CMD.ENABLE_FORWARDING, () => {
       executePrivileged(
         network.getEnableCommand(),
         "Agent Vibes — Enable Forwarding"
@@ -362,7 +372,7 @@ export function registerCommands(
   )
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD.DISABLE_FORWARDING, async () => {
+    vscode.commands.registerCommand(CMD.DISABLE_FORWARDING, () => {
       executePrivileged(
         network.getDisableCommand(),
         "Agent Vibes — Disable Forwarding"
@@ -390,7 +400,7 @@ export function registerCommands(
   )
 
   context.subscriptions.push(
-    vscode.commands.registerCommand(CMD.COLLECT_DIAGNOSTICS, async () => {
+    vscode.commands.registerCommand(CMD.COLLECT_DIAGNOSTICS, () => {
       vscode.window.showInformationMessage(
         "Diagnostics collection — coming soon"
       )

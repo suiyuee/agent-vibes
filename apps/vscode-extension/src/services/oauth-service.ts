@@ -22,8 +22,8 @@ const CLIENT_ID =
   "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 const CLIENT_SECRET = "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"
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-const TOKEN_URL = "https://oauth2.googleapis.com/token"
-const USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
+const _TOKEN_URL = "https://oauth2.googleapis.com/token"
+const _USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 
 const SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
@@ -63,7 +63,7 @@ export async function startOAuthFlow(): Promise<{
   cancel: () => void
 }> {
   const state = crypto.randomBytes(16).toString("hex")
-  const server: http.Server | null = null
+  const _server: http.Server | null = null
   let cancelFn: (() => void) | null = null
 
   // 1. Start local callback server
@@ -256,15 +256,23 @@ function exchangeCode(
       })
       res.on("end", () => {
         try {
-          const data = JSON.parse(body)
+          const data = JSON.parse(body) as Record<string, unknown>
           if (data.error) {
             reject(
               new Error(
-                `Token exchange failed: ${data.error_description || data.error}`
+                `Token exchange failed: ${String(data.error_description || data.error)}`
               )
             )
           } else {
-            resolve(data as TokenResponse)
+            resolve({
+              access_token: String(data.access_token ?? ""),
+              refresh_token:
+                typeof data.refresh_token === "string"
+                  ? data.refresh_token
+                  : undefined,
+              expires_in: Number(data.expires_in ?? 0),
+              token_type: String(data.token_type ?? ""),
+            })
           }
         } catch {
           reject(new Error(`Invalid token response: ${body}`))
@@ -306,11 +314,16 @@ function getUserInfo(accessToken: string): Promise<UserInfo> {
       })
       res.on("end", () => {
         try {
-          const data = JSON.parse(body)
+          const data = JSON.parse(body) as Record<string, unknown>
           if (data.error) {
             reject(new Error(`UserInfo error: ${JSON.stringify(data.error)}`))
           } else {
-            resolve(data as UserInfo)
+            resolve({
+              email: String(data.email ?? ""),
+              name: typeof data.name === "string" ? data.name : undefined,
+              picture:
+                typeof data.picture === "string" ? data.picture : undefined,
+            })
           }
         } catch {
           reject(new Error(`Invalid userinfo response: ${body}`))

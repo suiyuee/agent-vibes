@@ -172,9 +172,7 @@ function upsertClaudeAccount(destPath: string, account: JsonObject): void {
   saveAccountsFile(destPath, nextAccounts)
 }
 
-export async function syncCodexAccount(
-  config: ConfigManager
-): Promise<SyncResult> {
+export function syncCodexAccount(config: ConfigManager): SyncResult {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex")
   const authPath = path.join(codexHome, "auth.json")
 
@@ -242,9 +240,7 @@ export async function syncCodexAccount(
   }
 }
 
-export async function syncClaudeAccount(
-  config: ConfigManager
-): Promise<SyncResult> {
+export function syncClaudeAccount(config: ConfigManager): SyncResult {
   const explicitPath = process.env.CLAUDE_SETTINGS_PATH?.trim()
   const configDir =
     process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), ".claude")

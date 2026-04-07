@@ -80,7 +80,17 @@ export class DashboardPanel {
 
     // Handle messages from webview
     this.panel.webview.onDidReceiveMessage(
-      (msg) => this.handleMessage(msg),
+      (msg: {
+        type: string
+        command?: string
+        channel?: string
+        index?: number
+        raw?: string
+        data?: Record<string, unknown>
+        key?: string
+        value?: unknown
+        testId?: string
+      }) => this.handleMessage(msg),
       null,
       this.disposables
     )
@@ -290,7 +300,7 @@ export class DashboardPanel {
     const stripAnsi = (s: string): string =>
       s.replace(
         // eslint-disable-next-line no-control-regex
-        /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g,
+        /\x1B(?:[@-Z\-_]|\[[0-?]*[ -/]*[@-~])/g,
         ""
       )
 
@@ -358,7 +368,7 @@ export class DashboardPanel {
         })
       })
 
-      const parsed = JSON.parse(data)
+      const parsed = JSON.parse(data) as Record<string, unknown>
       this.panel.webview.postMessage({
         type: "poolStatusUpdate",
         data: parsed,
@@ -412,7 +422,7 @@ export class DashboardPanel {
         })
       })
 
-      const parsed = JSON.parse(data)
+      const parsed = JSON.parse(data) as Record<string, unknown>
       this.panel.webview.postMessage({
         type: "googleQuotaUpdate",
         data: parsed,
@@ -467,7 +477,7 @@ export class DashboardPanel {
         })
       })
 
-      const parsed = JSON.parse(data)
+      const parsed = JSON.parse(data) as Record<string, unknown>
       this.panel.webview.postMessage({
         type: "codexQuotaUpdate",
         data: parsed,
@@ -521,7 +531,7 @@ export class DashboardPanel {
         })
       })
 
-      const parsed = JSON.parse(data)
+      const parsed = JSON.parse(data) as Record<string, unknown>
       this.panel.webview.postMessage({
         type: "usageSummaryUpdate",
         data: parsed,
@@ -629,7 +639,7 @@ export class DashboardPanel {
     // Try JSON array: [{"refresh_token": "..."}, ...]
     try {
       if (input.startsWith("[") && input.endsWith("]")) {
-        const parsed = JSON.parse(input)
+        const parsed = JSON.parse(input) as Record<string, unknown>
         if (Array.isArray(parsed)) {
           tokenEntries = parsed
             .map((item: Record<string, unknown>) => ({
@@ -648,7 +658,7 @@ export class DashboardPanel {
     if (tokenEntries.length === 0) {
       // Google refresh tokens: 1//...
       // OpenAI refresh tokens: rt_...
-      const regex = /(?:1\/\/[a-zA-Z0-9_\-]+|rt_[a-zA-Z0-9_\-.]+)/g
+      const regex = /(?:1\/\/[a-zA-Z0-9_-]+|rt_[a-zA-Z0-9_.+-]+)/g
       const matches = input.match(regex)
       if (matches) {
         tokenEntries = matches.map((refreshToken) => ({
@@ -1668,7 +1678,7 @@ export class DashboardPanel {
     const accessToken = String(account.accessToken || "").trim()
 
     const findIndex = accounts.findIndex((candidate) => {
-      const row = candidate as Record<string, unknown>
+      const row = candidate
       const rowRefreshToken = String(row.refreshToken || "").trim()
       const rowAccessToken = String(row.accessToken || "").trim()
       const rowEmail = String(row.email || "")

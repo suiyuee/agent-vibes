@@ -689,19 +689,23 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    let previous = new Array(afterRemaining.length + 1).fill(0)
+    let previous: number[] = new Array<number>(afterRemaining.length + 1).fill(
+      0
+    )
     for (const beforeLine of beforeRemaining) {
-      const current = new Array(afterRemaining.length + 1).fill(0)
+      const current: number[] = new Array<number>(
+        afterRemaining.length + 1
+      ).fill(0)
       for (let index = 1; index <= afterRemaining.length; index++) {
         current[index] =
           beforeLine === afterRemaining[index - 1]
-            ? previous[index - 1] + 1
-            : Math.max(previous[index], current[index - 1])
+            ? (previous[index - 1] ?? 0) + 1
+            : Math.max(previous[index] ?? 0, current[index - 1] ?? 0)
       }
       previous = current
     }
 
-    const lcsLength = previous[afterRemaining.length] || 0
+    const lcsLength: number = previous[afterRemaining.length] ?? 0
     return {
       linesAdded: afterRemaining.length - lcsLength,
       linesRemoved: beforeRemaining.length - lcsLength,

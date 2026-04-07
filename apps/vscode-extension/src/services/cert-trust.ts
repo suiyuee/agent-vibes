@@ -69,11 +69,15 @@ export class CertTrustService {
   static isCaTrustedMacOS(caCertPath: string): boolean {
     if (process.platform !== "darwin") return false
     try {
-      const { execSync } = require("child_process")
-      const result = execSync(`security verify-cert -c "${caCertPath}" 2>&1`, {
-        encoding: "utf-8",
-        stdio: "pipe",
-      })
+      const childProcess =
+        require("child_process") as typeof import("child_process")
+      const result = childProcess.execSync(
+        `security verify-cert -c "${caCertPath}" 2>&1`,
+        {
+          encoding: "utf-8",
+          stdio: "pipe",
+        }
+      )
       return result.includes("valid")
     } catch {
       return false
@@ -239,7 +243,7 @@ if [ -f "${profile.path}" ]; then
   if grep -q "NODE_EXTRA_CA_CERTS" "${profile.path}" 2>/dev/null; then
     # Check if it already points to the correct CA path
     if grep -q 'NODE_EXTRA_CA_CERTS="${caCertPath}"' "${profile.path}" 2>/dev/null || \\
-       grep -q "NODE_EXTRA_CA_CERTS=\"\\\$HOME/.agent-vibes/certs/ca.pem\"" "${profile.path}" 2>/dev/null; then
+       grep -q "NODE_EXTRA_CA_CERTS=\\"\\$HOME/.agent-vibes/certs/ca.pem\\"" "${profile.path}" 2>/dev/null; then
       echo "✓ NODE_EXTRA_CA_CERTS already correctly configured in ${profile.name}"
     else
       # Replace existing NODE_EXTRA_CA_CERTS with the correct path

@@ -1,3 +1,4 @@
+import * as os from "os"
 import * as path from "path"
 import * as fs from "fs"
 import { execSync } from "child_process"
@@ -7,7 +8,7 @@ const LOOPBACK_IP = "127.0.0.2"
 const HOSTS_BEGIN = "# BEGIN Cursor proxy forwarding"
 const PID_FILE =
   process.platform === "win32"
-    ? path.join(require("os").tmpdir(), "cursor-proxy-relay.pid")
+    ? path.join(os.tmpdir(), "cursor-proxy-relay.pid")
     : "/tmp/cursor-proxy-relay.pid"
 
 /**
@@ -130,7 +131,7 @@ export class NetworkManager {
   /**
    * Stub for backward compat with Clash-based code.
    */
-  async enableForwarding(_port?: number): Promise<void> {
+  enableForwarding(_port?: number): void {
     logger.info(
       "enableForwarding() called — use executePrivileged(network.getEnableCommand()) instead"
     )
@@ -139,7 +140,7 @@ export class NetworkManager {
   /**
    * Stub for backward compat.
    */
-  async disableForwarding(): Promise<void> {
+  disableForwarding(): void {
     logger.info(
       "disableForwarding() called — use executePrivileged(network.getDisableCommand()) instead"
     )

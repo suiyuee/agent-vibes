@@ -178,7 +178,9 @@ export class ConfigManager {
   getAccountCount(filePath: string): number {
     try {
       if (!fs.existsSync(filePath)) return 0
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as {
+        accounts?: Record<string, unknown>[]
+      }
       return Array.isArray(data.accounts) ? data.accounts.length : 0
     } catch {
       return 0
@@ -189,7 +191,9 @@ export class ConfigManager {
   readAccounts(filePath: string): Record<string, unknown>[] {
     try {
       if (!fs.existsSync(filePath)) return []
-      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"))
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as {
+        accounts?: Record<string, unknown>[]
+      }
       return Array.isArray(data.accounts) ? data.accounts : []
     } catch {
       return []
@@ -236,12 +240,10 @@ export class ConfigManager {
       if (!fs.existsSync(this.configFilePath)) {
         return fallback
       }
-      const parsed = JSON.parse(fs.readFileSync(this.configFilePath, "utf-8"))
-      if (
-        parsed &&
-        typeof parsed === "object" &&
-        key in (parsed as Record<string, unknown>)
-      ) {
+      const parsed: Record<string, unknown> = JSON.parse(
+        fs.readFileSync(this.configFilePath, "utf-8")
+      ) as Record<string, unknown>
+      if (parsed && typeof parsed === "object" && key in parsed) {
         return (parsed as Record<string, T>)[key] ?? fallback
       }
       return fallback
@@ -254,9 +256,11 @@ export class ConfigManager {
     let parsed: Record<string, unknown> = {}
     try {
       if (fs.existsSync(this.configFilePath)) {
-        const raw = JSON.parse(fs.readFileSync(this.configFilePath, "utf-8"))
+        const raw = JSON.parse(
+          fs.readFileSync(this.configFilePath, "utf-8")
+        ) as Record<string, unknown>
         if (raw && typeof raw === "object") {
-          parsed = raw as Record<string, unknown>
+          parsed = raw
         }
       }
     } catch {

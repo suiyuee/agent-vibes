@@ -73,7 +73,6 @@ export class ChatGptRegisterService {
   private loadRegisterFunction(
     modulePath: string
   ): ChatGptRegisterModule["registerChatGpt"] {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const loaded = require(modulePath) as Partial<ChatGptRegisterModule>
     if (typeof loaded.registerChatGpt !== "function") {
       throw new Error(
