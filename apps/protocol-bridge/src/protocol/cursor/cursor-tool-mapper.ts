@@ -733,6 +733,29 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
     },
   },
 
+  CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS: {
+    name: "get_mcp_tools",
+    description: "List MCP tools currently available to the agent",
+    input_schema: {
+      type: "object",
+      properties: {
+        server: {
+          type: "string",
+          description: "Optional MCP server filter",
+        },
+        tool_name: {
+          type: "string",
+          description: "Optional MCP tool name filter",
+        },
+        pattern: {
+          type: "string",
+          description: "Optional fuzzy match across tool metadata",
+        },
+      },
+      required: [],
+    },
+  },
+
   CLIENT_SIDE_TOOL_V2_EXA_SEARCH: {
     name: "exa_search",
     description: "Search the web using Exa",
@@ -958,6 +981,7 @@ const PREFERRED_CURSOR_KEY_BY_TOOL_NAME: Record<string, string> = {
   read_lints: "CLIENT_SIDE_TOOL_V2_READ_LINTS",
   list_mcp_resources: "CLIENT_SIDE_TOOL_V2_LIST_MCP_RESOURCES",
   read_mcp_resource: "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE",
+  get_mcp_tools: "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS",
   task: "CLIENT_SIDE_TOOL_V2_TASK_V2",
   read_todos: "CLIENT_SIDE_TOOL_V2_TODO_READ",
   update_todos: "CLIENT_SIDE_TOOL_V2_TODO_WRITE",
@@ -1035,6 +1059,8 @@ const TOOL_KEY_ALIASES: Record<string, string> = {
   setup_vm_environment: "CLIENT_SIDE_TOOL_V2_SETUP_VM_ENVIRONMENT",
   list_mcp_resources: "CLIENT_SIDE_TOOL_V2_LIST_MCP_RESOURCES",
   read_mcp_resource: "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE",
+  client_side_tool_v2_get_mcp_tools: "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS",
+  get_mcp_tools: "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS",
   read_lints: "CLIENT_SIDE_TOOL_V2_READ_LINTS",
   task: "CLIENT_SIDE_TOOL_V2_TASK_V2",
   subagent: "CLIENT_SIDE_TOOL_V2_TASK_V2",
@@ -1089,6 +1115,7 @@ const DEFAULT_AGENT_BUILTIN_CURSOR_TOOLS = [
   "CLIENT_SIDE_TOOL_V2_SWITCH_MODE",
   "CLIENT_SIDE_TOOL_V2_LIST_MCP_RESOURCES",
   "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE",
+  "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS",
   "CLIENT_SIDE_TOOL_V2_CALL_MCP_TOOL",
   "CLIENT_SIDE_TOOL_V2_BACKGROUND_SHELL_SPAWN",
   "CLIENT_SIDE_TOOL_V2_WRITE_SHELL_STDIN",
@@ -1341,6 +1368,7 @@ export function buildToolsForApi(
     "CLIENT_SIDE_TOOL_V2_READ_LINTS",
     "CLIENT_SIDE_TOOL_V2_LIST_MCP_RESOURCES",
     "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE",
+    "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS",
     "CLIENT_SIDE_TOOL_V2_ASK_QUESTION",
     "CLIENT_SIDE_TOOL_V2_ASK_FOLLOWUP_QUESTION",
     "CLIENT_SIDE_TOOL_V2_CREATE_PLAN",
@@ -1514,6 +1542,7 @@ export function getToolTypeEnumValue(toolName: string): number {
     CLIENT_SIDE_TOOL_V2_WRITE_SHELL_STDIN: 55,
     CLIENT_SIDE_TOOL_V2_RECORD_SCREEN: 56,
     CLIENT_SIDE_TOOL_V2_REPORT_BUGFIX_RESULTS: 58,
+    CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS: 63,
     CLIENT_SIDE_TOOL_V2_READ_LINTS: 30,
     CLIENT_SIDE_TOOL_V2_TODO_READ: 34,
     CLIENT_SIDE_TOOL_V2_TODO_WRITE: 35,

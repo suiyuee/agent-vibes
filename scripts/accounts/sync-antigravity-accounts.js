@@ -9,7 +9,7 @@
  *   npm run antigravity:sync -- --ide --accounts-file /abs/path/antigravity-accounts.json
  */
 
-const Database = require("better-sqlite3")
+const { DatabaseSync } = require("node:sqlite")
 const fs = require("fs")
 const path = require("path")
 const os = require("os")
@@ -103,7 +103,7 @@ function fromIDE() {
     process.exit(1)
   }
 
-  const db = new Database(DB, { readonly: true, fileMustExist: true })
+  const db = new DatabaseSync(DB, { open: true, readOnly: true })
   let authRaw = ""
   let oauthB64 = ""
   let enterprisePreferencesB64 = ""

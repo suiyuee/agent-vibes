@@ -125,6 +125,28 @@
     .status-card-value { font-size: var(--text-base); font-weight: 700; margin-top: 1px; }
     .status-card-action { flex-shrink: 0; }
 
+    .overview-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 6px;
+    }
+    .meta-pill {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 4px;
+      font-size: var(--text-sm);
+      color: var(--fg-2);
+    }
+    .meta-pill-label {
+      color: var(--fg-3);
+      font-weight: 600;
+    }
+    .meta-pill-value {
+      color: var(--fg-2);
+      font-weight: 500;
+    }
+
     /* ── Setup checklist ── */
     .setup-list { margin-top: var(--sp-4); }
     .setup-item {
@@ -549,6 +571,7 @@
         <div>
           <div style="font-size:var(--text-2xl);font-weight:800;letter-spacing:-0.02em">Agent Vibes</div>
           <div style="font-size:var(--text-sm);color:var(--fg-2)">Unified AI Agent Gateway - Happy vibing!</div>
+          <div class="overview-meta" id="overview-meta"></div>
         </div>
       </div>
       <!-- Status -->
@@ -1056,6 +1079,25 @@
 
     // ── Overview: status ──
     function renderStatus(s) {
+      const versions = s.versions || {};
+      const meta = document.getElementById('overview-meta');
+      const metaCards = [];
+      if (versions.extensionVersion) {
+        metaCards.push({ label: 'Extension', value: normalizeVersionLabel(versions.extensionVersion) });
+      }
+      if (versions.currentCursorVersion) {
+        metaCards.push({ label: 'Cursor', value: normalizeVersionLabel(versions.currentCursorVersion) });
+      }
+      if (versions.compatibleCursorVersion) {
+        metaCards.push({ label: 'Compat', value: normalizeVersionLabel(versions.compatibleCursorVersion) });
+      }
+      meta.innerHTML = metaCards.map(function(item) {
+        return '<div class="meta-pill">' +
+          '<span class="meta-pill-label">' + esc(item.label) + '</span>' +
+          '<span class="meta-pill-value">' + esc(item.value) + '</span>' +
+        '</div>';
+      }).join('');
+
       const isRunning = s.bridge === 'Running';
       const setup = s.setup || null;
       const overall = setup?.overallState || (isRunning ? 'ready' : 'setup');
@@ -1094,6 +1136,13 @@
       // Setup checklist removed — Actions section provides sufficient guidance
       const setupList = document.getElementById('setup-list');
       setupList.innerHTML = '';
+    }
+
+    function normalizeVersionLabel(value) {
+      if (!value) return '--';
+      const text = String(value).trim();
+      if (!text) return '--';
+      return text.charAt(0).toLowerCase() === 'v' ? text : 'v' + text;
     }
 
     // ── Overview: backends ──

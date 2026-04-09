@@ -237,11 +237,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Read extension version
+      - name: Read extension release metadata
         id: version
         run: |
           VERSION=$(node -p "require('./apps/vscode-extension/package.json').version")
+          CURSOR_VERSION=$(node -p "require('./apps/vscode-extension/package.json').agentVibes?.cursorVersion || ''")
+          if [ -z "$CURSOR_VERSION" ]; then
+            echo "Cursor compatibility version missing in apps/vscode-extension/package.json"
+            exit 1
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "cursor_version=$CURSOR_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Download extension packages
         uses: actions/download-artifact@v4
@@ -257,11 +263,14 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          name: Agent Vibes v${{ steps.version.outputs.version }} (Cursor ${{ steps.version.outputs.cursor_version }})
           files: |
             extensions/*.vsix
           generate_release_notes: true
           body: |
             ## Agent Vibes
+
+            Compatible Cursor version: `${{ steps.version.outputs.cursor_version }}`
 
             ### Cursor Extension (.vsix)
 

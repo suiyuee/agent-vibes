@@ -4,6 +4,9 @@
   "publisher": "funny-vibes",
   "description": "Unified AI Agent Gateway — Route Antigravity, Claude, and GPT backends through Cursor IDE and Claude Code CLI with protocol-native translation.",
   "version": "0.1.2",
+  "agentVibes": {
+    "cursorVersion": "3.0.13"
+  },
   "private": true,
   "license": "MIT",
   "homepage": "https://github.com/funny-vibes/agent-vibes#readme",
@@ -139,6 +142,12 @@
         "category": "Agent Vibes"
       },
       {
+        "command": "agentVibes.checkExtensionUpdates",
+        "title": "Check Extension Updates",
+        "category": "Agent Vibes",
+        "icon": "$(cloud-download)"
+      },
+      {
         "command": "agentVibes.openConfig",
         "title": "Edit Configuration",
         "category": "Agent Vibes",
@@ -181,6 +190,17 @@
           "type": "boolean",
           "default": true,
           "description": "Automatically start the proxy server when IDE launches"
+        },
+        "agentVibes.autoCheckUpdates": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically check GitHub Releases for new extension VSIX updates on startup"
+        },
+        "agentVibes.updateCheckIntervalHours": {
+          "type": "number",
+          "default": 12,
+          "minimum": 1,
+          "description": "Minimum interval in hours between automatic extension update checks"
         },
         "agentVibes.port": {
           "type": "number",

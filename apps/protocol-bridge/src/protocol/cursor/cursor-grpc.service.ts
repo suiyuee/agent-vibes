@@ -90,6 +90,11 @@ import {
   GenerateImageResultSchema,
   GenerateImageSuccessSchema,
   GenerateImageToolCallSchema,
+  GetMcpToolsAgentResultSchema,
+  GetMcpToolsArgsSchema,
+  GetMcpToolsErrorSchema,
+  GetMcpToolsSuccessSchema,
+  GetMcpToolsToolCallSchema,
   GetBlobArgsSchema,
   GlobToolArgsSchema,
   GlobToolCallSchema,
@@ -696,6 +701,7 @@ type ToolArgs =
   | ExecuteHookArgs
 
 type ToolFamily =
+  | "get_mcp_tools"
   | "read_mcp_resource"
   | "list_mcp_resources"
   | "read_lints"
@@ -868,6 +874,7 @@ export class CursorGrpcService {
   ])
   private readonly protocolInlineOnlyFamilies: ReadonlySet<ToolFamily> =
     new Set([
+      "get_mcp_tools",
       "fix_lints",
       "read_todos",
       "apply_agent_diff",
@@ -1682,6 +1689,8 @@ export class CursorGrpcService {
           return "list_mcp_resources"
         case "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE":
           return "read_mcp_resource"
+        case "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS":
+          return "get_mcp_tools"
         case "CLIENT_SIDE_TOOL_V2_DIAGNOSTICS":
         case "CLIENT_SIDE_TOOL_V2_READ_LINTS":
           return "read_lints"
@@ -1772,6 +1781,9 @@ export class CursorGrpcService {
       normalized.includes("listmcp")
     ) {
       return "list_mcp_resources"
+    }
+    if (normalized.includes("getmcptools")) {
+      return "get_mcp_tools"
     }
     if (
       normalized.includes("readlints") ||
@@ -1910,6 +1922,7 @@ export class CursorGrpcService {
     }
     if (family === "setup_vm_environment")
       return "setup_vm_environment_tool_call"
+    if (family === "get_mcp_tools") return "get_mcp_tools_tool_call"
     if (family === "read_todos") return "read_todos_tool_call"
     if (family === "apply_agent_diff") return "apply_agent_diff_tool_call"
     if (family === "sem_search") return "sem_search_tool_call"
@@ -3340,6 +3353,7 @@ export class CursorGrpcService {
   private buildEmptyToolCallV2(toolName: string, toolFamilyHint?: ToolFamily) {
     const family = this.resolveToolFamily(toolName, toolFamilyHint)
     const familyToCase: Record<ToolFamily, string> = {
+      get_mcp_tools: "getMcpToolsToolCall",
       read_mcp_resource: "readMcpResourceToolCall",
       list_mcp_resources: "listMcpResourcesToolCall",
       read_lints: "readLintsToolCall",
@@ -3673,6 +3687,28 @@ export class CursorGrpcService {
               downloadPath:
                 safeString(args.downloadPath || args.download_path).trim() ||
                 undefined,
+            }),
+          }),
+        }
+      case "get_mcp_tools":
+        return {
+          case: "getMcpToolsToolCall" as const,
+          value: create(GetMcpToolsToolCallSchema, {
+            args: create(GetMcpToolsArgsSchema, {
+              server:
+                safeString(
+                  args.server ||
+                    args.serverName ||
+                    args.server_name ||
+                    args.providerIdentifier ||
+                    args.provider_identifier
+                ).trim() || undefined,
+              toolName:
+                safeString(
+                  args.toolName || args.tool_name || args.name
+                ).trim() || undefined,
+              pattern: safeString(args.pattern).trim() || undefined,
+              toolCallId: callId,
             }),
           }),
         }
@@ -5112,6 +5148,49 @@ export class CursorGrpcService {
           }),
           result: create(McpToolResultSchema, {
             result: mcpResultOneOf,
+          }),
+        }),
+      }
+    }
+
+    if (family === "get_mcp_tools") {
+      const server = safeString(
+        args.server ||
+          args.serverName ||
+          args.server_name ||
+          args.providerIdentifier ||
+          args.provider_identifier
+      ).trim()
+      const toolName = safeString(
+        args.toolName || args.tool_name || args.name
+      ).trim()
+      const pattern = safeString(args.pattern).trim()
+      const getMcpToolsResultOneOf =
+        status === "success"
+          ? {
+              case: "success" as const,
+              value: create(GetMcpToolsSuccessSchema, {
+                content: result,
+              }),
+            }
+          : {
+              case: "error" as const,
+              value: create(GetMcpToolsErrorSchema, {
+                error: statusMessage || "get_mcp_tools failed",
+              }),
+            }
+
+      return {
+        case: "getMcpToolsToolCall" as const,
+        value: create(GetMcpToolsToolCallSchema, {
+          args: create(GetMcpToolsArgsSchema, {
+            server: server || undefined,
+            toolName: toolName || undefined,
+            pattern: pattern || undefined,
+            toolCallId: callId,
+          }),
+          result: create(GetMcpToolsAgentResultSchema, {
+            result: getMcpToolsResultOneOf,
           }),
         }),
       }

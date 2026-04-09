@@ -11,6 +11,7 @@ import { startOAuthFlow } from "../services/oauth-service"
 import { startCodexOAuthFlow } from "../services/codex-oauth-service"
 import { CMD, CURSOR_DOMAINS } from "../constants"
 import { logger } from "../utils/logger"
+import { detectCurrentCursorVersion } from "../utils/cursor-version"
 
 type AccountChannel = "antigravity" | "claude-api" | "codex" | "openai-compat"
 
@@ -42,6 +43,12 @@ type DashboardOverviewPayload = {
   steps: DashboardOverviewStep[]
 }
 
+type DashboardVersionPayload = {
+  extensionVersion: string
+  currentCursorVersion: string
+  compatibleCursorVersion: string
+}
+
 /**
  * Webview Panel for the Agent Vibes Dashboard.
  * Singleton — opening an existing panel brings it to focus.
@@ -52,6 +59,7 @@ export class DashboardPanel {
 
   private readonly panel: vscode.WebviewPanel
   private readonly extensionUri: vscode.Uri
+  private readonly versionInfo: DashboardVersionPayload
   private disposables: vscode.Disposable[] = []
   private readonly handleBridgeStateChanged = () => {
     if (this.panel.visible) {
@@ -71,6 +79,7 @@ export class DashboardPanel {
   ) {
     this.panel = panel
     this.extensionUri = extensionUri
+    this.versionInfo = this.getVersionInfo()
 
     // Set initial HTML
     this.panel.webview.html = this.getHtml()
@@ -724,6 +733,7 @@ export class DashboardPanel {
       totalAccounts,
       defaultProxyUrl: this.getDefaultProxyUrl(),
       setup: this.getOverviewPayload(channelAccountsData),
+      versions: this.versionInfo,
     }
 
     // Status
@@ -1767,6 +1777,47 @@ export class DashboardPanel {
     )
 
     return html
+  }
+
+  private getVersionInfo(): DashboardVersionPayload {
+    const packageJsonPath = path.join(this.extensionUri.fsPath, "package.json")
+
+    try {
+      const raw = fs.readFileSync(packageJsonPath, "utf-8")
+      const parsed = JSON.parse(raw) as {
+        version?: unknown
+        agentVibes?: {
+          cursorVersion?: unknown
+        }
+      }
+
+      const extensionVersion =
+        typeof parsed.version === "string" && parsed.version.trim().length > 0
+          ? parsed.version.trim()
+          : "unknown"
+      const compatibleCursorVersion =
+        typeof parsed.agentVibes?.cursorVersion === "string" &&
+        parsed.agentVibes.cursorVersion.trim().length > 0
+          ? parsed.agentVibes.cursorVersion.trim()
+          : "unknown"
+      const currentCursorVersion =
+        detectCurrentCursorVersion() || compatibleCursorVersion
+
+      return {
+        extensionVersion,
+        currentCursorVersion,
+        compatibleCursorVersion,
+      }
+    } catch (error) {
+      logger.warn(
+        `Failed to read extension version metadata: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return {
+        extensionVersion: "unknown",
+        currentCursorVersion: "unknown",
+        compatibleCursorVersion: "unknown",
+      }
+    }
   }
 
   /**

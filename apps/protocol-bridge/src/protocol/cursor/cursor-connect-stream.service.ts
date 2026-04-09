@@ -71,6 +71,7 @@ import {
 import { KvStorageService } from "./kv-storage.service"
 import {
   buildMcpDispatchInput,
+  normalizeMcpToolIdentifier,
   resolveMcpCallFields as resolveMcpCallFieldsFromContract,
   resolveMcpToolDefinition,
 } from "./mcp-call-contract"
@@ -224,6 +225,7 @@ type InlineWebToolFamily = "web_search" | "web_fetch"
 
 type DeferredToolFamily =
   | InlineWebToolFamily
+  | "get_mcp_tools"
   | "read_url_content"
   | "view_content_chunk"
   | "fetch"
@@ -3318,6 +3320,8 @@ ${raw}
           return "exa_search"
         case "CLIENT_SIDE_TOOL_V2_EXA_FETCH":
           return "exa_fetch"
+        case "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS":
+          return "get_mcp_tools"
         case "CLIENT_SIDE_TOOL_V2_SETUP_VM_ENVIRONMENT":
           return "setup_vm_environment"
         case "CLIENT_SIDE_TOOL_V2_TODO_READ":
@@ -3385,6 +3389,9 @@ ${raw}
     }
     if (snake.includes("exa_fetch") || compact.includes("exafetch")) {
       return "exa_fetch"
+    }
+    if (snake.includes("get_mcp_tools") || compact.includes("getmcptools")) {
+      return "get_mcp_tools"
     }
     if (
       snake === "fetch" ||
@@ -6496,6 +6503,111 @@ ${raw}
     }
   }
 
+  private executeInlineGetMcpTools(
+    conversationId: string,
+    input: Record<string, unknown>
+  ): {
+    content: string
+    state: { status: ToolResultStatus; message?: string }
+  } {
+    const session = this.sessionManager.getSession(conversationId)
+    if (!session) {
+      return {
+        content: "[get_mcp_tools error] Session not found",
+        state: { status: "error", message: "session not found" },
+      }
+    }
+
+    const serverFilter =
+      this.pickFirstString(input, [
+        "server",
+        "serverName",
+        "server_name",
+        "providerIdentifier",
+        "provider_identifier",
+      ]) || ""
+    const toolNameFilter =
+      this.pickFirstString(input, ["tool_name", "toolName", "name"]) || ""
+    const pattern = this.pickFirstString(input, ["pattern", "query"]) || ""
+
+    input.server = serverFilter
+    input.tool_name = toolNameFilter
+    input.pattern = pattern
+
+    const normalizedServerFilter = normalizeMcpToolIdentifier(serverFilter)
+    const normalizedToolNameFilter = normalizeMcpToolIdentifier(toolNameFilter)
+    const normalizedPattern = normalizeMcpToolIdentifier(pattern)
+    const lowerPattern = pattern.toLowerCase()
+    const defs = session.mcpToolDefs || []
+
+    const filteredDefs = defs.filter((def) => {
+      const normalizedProvider = normalizeMcpToolIdentifier(
+        def.providerIdentifier || ""
+      )
+      const normalizedToolName = normalizeMcpToolIdentifier(def.toolName || "")
+      const normalizedName = normalizeMcpToolIdentifier(def.name || "")
+      const matchesServer =
+        !normalizedServerFilter ||
+        normalizedProvider === normalizedServerFilter ||
+        normalizedProvider.includes(normalizedServerFilter) ||
+        normalizedServerFilter.includes(normalizedProvider)
+      const matchesToolName =
+        !normalizedToolNameFilter ||
+        normalizedToolName === normalizedToolNameFilter ||
+        normalizedToolName.includes(normalizedToolNameFilter) ||
+        normalizedName === normalizedToolNameFilter
+
+      if (!matchesServer || !matchesToolName) {
+        return false
+      }
+
+      if (!pattern) {
+        return true
+      }
+
+      const haystacks = [
+        def.name || "",
+        def.toolName || "",
+        def.providerIdentifier || "",
+        def.description || "",
+      ]
+      return haystacks.some((value) => {
+        const lowered = value.toLowerCase()
+        return (
+          lowered.includes(lowerPattern) ||
+          normalizeMcpToolIdentifier(value).includes(normalizedPattern)
+        )
+      })
+    })
+
+    const payload: Record<string, unknown> = {
+      total: filteredDefs.length,
+      tools: filteredDefs.map((def) => ({
+        server: def.providerIdentifier,
+        tool_name: def.toolName,
+        name: def.name,
+        description: def.description,
+        input_schema: def.inputSchema || {
+          type: "object",
+          properties: {},
+        },
+      })),
+    }
+
+    if (serverFilter || toolNameFilter || pattern) {
+      payload.filters = {
+        ...(serverFilter ? { server: serverFilter } : {}),
+        ...(toolNameFilter ? { tool_name: toolNameFilter } : {}),
+        ...(pattern ? { pattern } : {}),
+      }
+    }
+
+    return {
+      content: JSON.stringify(payload, null, 2),
+      state: { status: "success" },
+    }
+  }
+
   private executeInlineReflect(input: Record<string, unknown>): {
     content: string
     state: { status: ToolResultStatus; message?: string }
@@ -6634,6 +6746,11 @@ ${raw}
     }
     if (family === "exa_fetch") {
       return this.executeInlineExaFetch(input)
+    }
+    if (family === "get_mcp_tools") {
+      return Promise.resolve(
+        this.executeInlineGetMcpTools(conversationId, input)
+      )
     }
     if (family === "todo_read") {
       return this.executeInlineTodoRead(conversationId, input)

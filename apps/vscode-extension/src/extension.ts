@@ -8,6 +8,7 @@ import { StatusIndicator } from "./views/status-indicator"
 import { registerCommands } from "./commands"
 import { executePrivileged } from "./utils/terminal"
 import { CMD, type ServerState } from "./constants"
+import { ExtensionUpdateService } from "./services/extension-update"
 
 // Singleton references for cleanup
 let bridge: BridgeManager | null = null
@@ -31,6 +32,7 @@ export async function activate(
   network.setExtensionPath(context.extensionPath)
   network.setPort(config.port)
   const cert = new CertManager(config)
+  const updater = new ExtensionUpdateService(context)
 
   // Create UI
   statusIndicator = new StatusIndicator()
@@ -41,7 +43,7 @@ export async function activate(
   })
 
   // Register all commands
-  registerCommands(context, bridge, config, cert, network)
+  registerCommands(context, bridge, config, cert, network, updater)
 
   let currentPort = config.port
   context.subscriptions.push(
@@ -171,6 +173,8 @@ export async function activate(
         )
       })
   }
+
+  void updater.checkForUpdatesOnStartup()
 
   logger.info("Agent Vibes extension activated")
 }

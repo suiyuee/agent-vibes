@@ -3,6 +3,7 @@
 const { spawnSync } = require("node:child_process")
 const fs = require("node:fs")
 const path = require("node:path")
+const { detectCursorVersion } = require("../lib/cursor-version")
 
 const ROOT = path.resolve(__dirname, "..", "..")
 const EXT_PKG = path.join(ROOT, "apps", "vscode-extension", "package.json")
@@ -13,6 +14,7 @@ function parseArgs(argv) {
     target: "main",
     remote: "origin",
     bump: "patch", // patch | minor | major | current
+    cursorVersion: "",
     noTag: false,
     help: false,
   }
@@ -33,6 +35,10 @@ function parseArgs(argv) {
     }
     if ((arg === "--remote" || arg === "-r") && argv[i + 1]) {
       parsed.remote = argv[++i]
+      continue
+    }
+    if ((arg === "--cursor-version" || arg === "-c") && argv[i + 1]) {
+      parsed.cursorVersion = argv[++i]
       continue
     }
     if (arg === "--patch") {
@@ -80,7 +86,10 @@ Options:
   --no-tag    Merge only, skip version bump and tag
   --source    Source branch (default: dev)
   --target    Target branch (default: main)
-  --remote    Git remote (default: origin)`)
+  --remote    Git remote (default: origin)
+  --cursor-version, -c
+              Cursor compatibility version to publish in release metadata
+              (default: auto-detect from installed Cursor)`)
 }
 
 function runGit(args, options = {}) {
@@ -194,6 +203,39 @@ function syncReleaseDocs() {
   runNode(path.join("apps", "vscode-extension", "scripts", "sync-readme.mjs"))
 }
 
+function readExtensionPackage() {
+  return JSON.parse(fs.readFileSync(EXT_PKG, "utf8"))
+}
+
+function writeExtensionPackage(pkg) {
+  fs.writeFileSync(EXT_PKG, JSON.stringify(pkg, null, 2) + "\n")
+}
+
+function resolveReleaseCursorVersion(explicitVersion) {
+  const resolved = (explicitVersion || "").trim() || detectCursorVersion()
+  if (!resolved) {
+    throw new Error(
+      "Failed to determine Cursor version. Pass --cursor-version <x.y.z> when running npm run release."
+    )
+  }
+
+  return resolved
+}
+
+function syncCursorReleaseMetadata(cursorVersion) {
+  const pkg = readExtensionPackage()
+  if (pkg.agentVibes?.cursorVersion === cursorVersion) {
+    return false
+  }
+
+  pkg.agentVibes = {
+    ...(pkg.agentVibes || {}),
+    cursorVersion,
+  }
+  writeExtensionPackage(pkg)
+  return true
+}
+
 function cleanupExistingRelease(tag, remote) {
   step(`Cleaning up existing release/tag ${tag}`)
   runGh(["release", "delete", tag, "--yes"], { allowFailure: true })
@@ -206,7 +248,7 @@ function cleanupExistingRelease(tag, remote) {
  * Returns { oldVersion, newVersion }.
  */
 function bumpVersion(type) {
-  const pkg = JSON.parse(fs.readFileSync(EXT_PKG, "utf8"))
+  const pkg = readExtensionPackage()
   const old = pkg.version
   if (!old) {
     throw new Error("No version field in apps/vscode-extension/package.json")
@@ -231,7 +273,7 @@ function bumpVersion(type) {
 
   const next = `${major}.${minor}.${patch}`
   pkg.version = next
-  fs.writeFileSync(EXT_PKG, JSON.stringify(pkg, null, 2) + "\n")
+  writeExtensionPackage(pkg)
 
   return { oldVersion: old, newVersion: next }
 }
@@ -270,10 +312,12 @@ function main() {
 
     // ── Bump version on source branch ────────────────────────────────
     let tag
+    let cursorVersion
     if (!args.noTag) {
+      cursorVersion = resolveReleaseCursorVersion(args.cursorVersion)
       if (args.bump === "current") {
         // Use current version as-is, no bump
-        const pkg = JSON.parse(fs.readFileSync(EXT_PKG, "utf8"))
+        const pkg = readExtensionPackage()
         tag = `v${pkg.version}`
         step(`Using current version ${pkg.version}`)
       } else {
@@ -283,13 +327,21 @@ function main() {
         console.log(`  ${oldVersion} → ${newVersion}`)
       }
 
+      step(`Syncing Cursor compatibility metadata (${cursorVersion})`)
+      syncCursorReleaseMetadata(cursorVersion)
+
       step("Syncing release docs")
       syncReleaseDocs()
 
       const statusAfterSync = gitOutput(["status", "--porcelain"])
       if (statusAfterSync) {
         runGit(["add", EXT_PKG, "README.md", "README_zh.md"])
-        runGit(["commit", "-m", `chore: release ${tag}`], { capture: true })
+        runGit(
+          ["commit", "-m", `chore: release ${tag} for cursor ${cursorVersion}`],
+          {
+            capture: true,
+          }
+        )
       }
     }
 
@@ -315,7 +367,13 @@ function main() {
       }
 
       step(`Creating tag ${tag}`)
-      runGit(["tag", "-a", tag, "-m", `Release ${tag}`])
+      runGit([
+        "tag",
+        "-a",
+        tag,
+        "-m",
+        `Release ${tag} (Cursor ${cursorVersion})`,
+      ])
 
       step(`Pushing tag ${tag} (triggers release workflow)`)
       runGit(["push", remote, tag])

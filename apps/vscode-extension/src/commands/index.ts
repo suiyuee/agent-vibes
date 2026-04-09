@@ -6,6 +6,7 @@ import { NetworkManager } from "../services/network-manager"
 import { AccountSyncService } from "../services/account-sync"
 import { CursorPatchService } from "../services/cursor-patch"
 import { CertTrustService } from "../services/cert-trust"
+import { ExtensionUpdateService } from "../services/extension-update"
 import {
   syncClaudeAccount,
   syncCodexAccount,
@@ -96,7 +97,8 @@ export function registerCommands(
   bridge: BridgeManager,
   config: ConfigManager,
   cert: CertManager,
-  network: NetworkManager
+  network: NetworkManager,
+  updater: ExtensionUpdateService
 ): void {
   const FORWARDING_RELOAD_PROMPTED_KEY = "agentVibes.forwardingReloadPrompted"
 
@@ -434,6 +436,19 @@ export function registerCommands(
       vscode.window.showInformationMessage(
         "Diagnostics collection — coming soon"
       )
+    })
+  )
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(CMD.CHECK_UPDATES, async () => {
+      try {
+        await updater.checkForUpdates({ userInitiated: true })
+      } catch (err) {
+        logger.error("Failed to check for extension updates", err)
+        vscode.window.showErrorMessage(
+          `Update check failed: ${err instanceof Error ? err.message : String(err)}`
+        )
+      }
     })
   )
 

@@ -5,6 +5,9 @@
 // Extension identifiers
 export const EXTENSION_ID = "agent-vibes"
 export const EXTENSION_DISPLAY_NAME = "Agent Vibes"
+export const GITHUB_REPO = "funny-vibes/agent-vibes"
+export const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_REPO}/releases`
+export const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
 
 // Context keys (for when-clause evaluation)
 export const CTX_SERVER_RUNNING = "agentVibes.serverRunning"
@@ -23,6 +26,7 @@ export const CMD = {
   DISABLE_FORWARDING: "agentVibes.disableForwarding",
   FORWARDING_STATUS: "agentVibes.forwardingStatus",
   COLLECT_DIAGNOSTICS: "agentVibes.collectDiagnostics",
+  CHECK_UPDATES: "agentVibes.checkExtensionUpdates",
   OPEN_CONFIG: "agentVibes.openConfig",
   PATCH_CURSOR: "agentVibes.patchCursor",
   RESTORE_CURSOR: "agentVibes.restoreCursor",
@@ -34,6 +38,7 @@ export const CMD = {
 export const DEFAULTS = {
   PORT: 2026,
   HEALTH_CHECK_INTERVAL: 30, // seconds
+  UPDATE_CHECK_INTERVAL_HOURS: 12,
   LOOPBACK_IP: "127.0.0.2",
   FROM_PORT: 443,
 } as const

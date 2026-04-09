@@ -12,12 +12,18 @@ const readmeEnPath = path.join(repoRoot, "README.md")
 const readmeZhPath = path.join(repoRoot, "README_zh.md")
 const extensionReadmePath = path.join(extensionRoot, "README.md")
 
-const version = JSON.parse(fs.readFileSync(extensionPkgPath, "utf8")).version
+const extensionPkg = JSON.parse(fs.readFileSync(extensionPkgPath, "utf8"))
+const version = extensionPkg.version
+const cursorVersion = extensionPkg.agentVibes?.cursorVersion
 const tag = `v${version}`
 const releaseBase = `https://github.com/funny-vibes/agent-vibes/releases/download/${tag}`
 
 if (!version) {
   throw new Error(`Version not found in ${extensionPkgPath}`)
+}
+
+if (!cursorVersion) {
+  throw new Error(`Cursor version not found in ${extensionPkgPath}`)
 }
 
 const installBlocks = {
@@ -39,6 +45,13 @@ function replacePlatformBlock(content, platform, block) {
     "g"
   )
   return content.replace(pattern, block)
+}
+
+function replaceCompatibilityLine(content, anchor, line, existingPattern) {
+  let next = content
+  next = next.replace(existingPattern, "")
+
+  return next.replace(anchor, `${anchor}\n${line}`)
 }
 
 function collapseDuplicateCommands(content, version) {
@@ -72,6 +85,18 @@ function updateReadme(filePath) {
 
   let content = fs.readFileSync(filePath, "utf8")
   content = collapseDuplicateCommands(content, version)
+  content = replaceCompatibilityLine(
+    content,
+    "One-click download + install from [GitHub Releases](https://github.com/funny-vibes/agent-vibes/releases):",
+    `Compatible Cursor version: \`${cursorVersion}\`.`,
+    /Compatible Cursor version: `[^`]+`\.\n/g
+  )
+  content = replaceCompatibilityLine(
+    content,
+    "从 [GitHub Releases](https://github.com/funny-vibes/agent-vibes/releases) 一键下载并安装：",
+    `兼容 Cursor 版本：\`${cursorVersion}\`。`,
+    /兼容 Cursor 版本：`[^`]+`。\n/g
+  )
   content = replacePlatformBlock(
     content,
     "macOS Apple Silicon",
@@ -92,6 +117,7 @@ updateReadme(readmeZhPath)
 fs.copyFileSync(readmeEnPath, extensionReadmePath)
 
 console.log(`Updated install commands to ${tag} in README.md and README_zh.md`)
+console.log(`Pinned release compatibility to Cursor ${cursorVersion}`)
 console.log(
   `Synced README.md → ${path.relative(repoRoot, extensionReadmePath)}`
 )
