@@ -49,24 +49,12 @@ export class ContextProjectionService {
     const retainedRecords = sourceRecords.slice(archivedIndex + 1)
 
     const projected: ProjectedContextMessage[] = [
-      {
-        role: "user",
-        content: this.buildBoundaryMessage(activeCommit),
-        source: "boundary",
-        commitId: activeCommit.id,
-      },
-      {
-        role: "user",
-        content: this.buildSummaryMessage(activeCommit),
-        source: "summary",
-        commitId: activeCommit.id,
-      },
+      this.buildBoundaryProjection(activeCommit),
+      this.buildSummaryProjection(activeCommit),
       ...this.buildAttachmentMessages(liveAttachments, activeCommit.id),
     ]
 
-    projected.push(
-      ...this.buildRecordMessages(retainedRecords)
-    )
+    projected.push(...this.buildRecordMessages(retainedRecords))
 
     return projected
   }
@@ -80,7 +68,48 @@ export class ContextProjectionService {
     )
   }
 
-  private buildBoundaryMessage(commit: ContextCompactionCommit): string {
+  private buildBoundaryProjection(
+    commit: ContextCompactionCommit
+  ): ProjectedContextMessage {
+    return {
+      role: "user",
+      content: this.renderCompactionBoundary(commit),
+      source: "boundary",
+      commitId: commit.id,
+      compactionEvent: {
+        type: "boundary",
+        commitId: commit.id,
+        epoch: commit.epoch,
+        parentCompactionId: commit.parentCompactionId,
+        archivedThroughRecordId: commit.archivedThroughRecordId,
+        sourceTokenCount: commit.sourceTokenCount,
+        projectedTokenCount: commit.projectedTokenCount,
+      },
+    }
+  }
+
+  private buildSummaryProjection(
+    commit: ContextCompactionCommit
+  ): ProjectedContextMessage {
+    return {
+      role: "user",
+      content: this.renderCompactionSummary(commit),
+      source: "summary",
+      commitId: commit.id,
+      compactionEvent: {
+        type: "summary",
+        commitId: commit.id,
+        epoch: commit.epoch,
+        parentCompactionId: commit.parentCompactionId,
+        archivedThroughRecordId: commit.archivedThroughRecordId,
+        summaryTokenCount: commit.summaryTokenCount,
+        sourceTokenCount: commit.sourceTokenCount,
+        projectedTokenCount: commit.projectedTokenCount,
+      },
+    }
+  }
+
+  renderCompactionBoundary(commit: ContextCompactionCommit): string {
     return (
       `[Context boundary ${commit.id}]\n` +
       `Earlier conversation history was compacted into a structured summary. ` +
@@ -88,12 +117,19 @@ export class ContextProjectionService {
     )
   }
 
-  private buildSummaryMessage(commit: ContextCompactionCommit): string {
+  renderCompactionSummary(commit: ContextCompactionCommit): string {
     return (
       `[Context summary ${commit.id}]\n` +
       `${commit.summary}\n\n` +
       `Do not answer this summary directly. Use it only as compressed working context.`
     )
+  }
+
+  renderProjectedMessage(message: ProjectedContextMessage): string | undefined {
+    if (typeof message.content === "string") {
+      return message.content
+    }
+    return undefined
   }
 
   private buildRecordMessages(

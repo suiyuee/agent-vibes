@@ -139,9 +139,13 @@ export interface ContextCompactionCommit {
   id: string
   strategy: "auto" | "manual" | "reactive"
   createdAt: number
+  epoch?: number
+  parentCompactionId?: string
   archivedThroughRecordId: string
   projectionAnchorRecordId?: string
   archivedMessageCount: number
+  sourceRecordCount?: number
+  attachmentFingerprint?: string
   sourceTokenCount: number
   summary: string
   summaryTokenCount: number
@@ -156,6 +160,14 @@ export interface ContextUsageLedgerState {
   attachmentFingerprint?: string
 }
 
+export interface ContextCompactionBasis {
+  recordCount: number
+  attachmentFingerprint: string
+  appliedAt: number
+  compactionId: string
+  epoch: number
+}
+
 export interface ContextToolResultReplacementState {
   seenToolUseIds: string[]
   replacementByToolUseId: Record<string, string>
@@ -165,6 +177,8 @@ export interface ContextConversationState {
   records: ContextTranscriptRecord[]
   compactionHistory: ContextCompactionCommit[]
   activeCompactionId?: string
+  compactionEpoch?: number
+  lastAppliedCompaction?: ContextCompactionBasis
   usageLedger: ContextUsageLedgerState
   toolResultReplacementState?: ContextToolResultReplacementState
 }
@@ -176,6 +190,16 @@ export interface ProjectedContextMessage {
   recordId?: string
   commitId?: string
   attachmentKind?: ContextProjectionAttachment["kind"]
+  compactionEvent?: {
+    type: "boundary" | "summary"
+    commitId: string
+    epoch?: number
+    parentCompactionId?: string
+    archivedThroughRecordId?: string
+    summaryTokenCount?: number
+    sourceTokenCount?: number
+    projectedTokenCount?: number
+  }
 }
 
 /**

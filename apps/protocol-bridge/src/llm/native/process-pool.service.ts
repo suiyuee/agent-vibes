@@ -262,6 +262,12 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
   private readonly MAX_CONCURRENT_GENERATIONS_PER_WORKER = 1
   private readonly WORKER_BUSY_RETRY_HINT_MS = 1000
   private readonly GOOGLE_QUOTA_SNAPSHOT_CACHE_TTL_MS = 60_000
+  /**
+   * Google quota snapshots report the protected floor as 20% remaining; in
+   * practice that floor is already a model hold / exhausted state for both
+   * Gemini and Claude, so keep those accounts out of scheduling until reset.
+   */
+  private readonly GOOGLE_QUOTA_EXHAUSTED_REMAINING_FRACTION = 0.2
   /** Timeout for non-streaming generation (deep thinking models may take long) */
   private readonly GENERATE_TIMEOUT_MS = 3_600_000 // 1 hour
   private antigravityGoBinary: string | null = null
@@ -2060,7 +2066,7 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
       const resetAt = this.parseGoogleQuotaResetAt(snapshot.resetTime)
       const exhaustedBySnapshot =
         typeof remainingFraction === "number" &&
-        remainingFraction <= 0 &&
+        remainingFraction <= this.GOOGLE_QUOTA_EXHAUSTED_REMAINING_FRACTION &&
         resetAt != null &&
         resetAt > now
 
@@ -2083,7 +2089,7 @@ export class ProcessPoolService implements OnModuleInit, OnModuleDestroy {
 
       const snapshotStillExhaustedWithoutResetBoundary =
         typeof remainingFraction === "number" &&
-        remainingFraction <= 0 &&
+        remainingFraction <= this.GOOGLE_QUOTA_EXHAUSTED_REMAINING_FRACTION &&
         resetAt == null &&
         existing.cooldownUntil > now
 

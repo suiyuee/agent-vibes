@@ -129,9 +129,11 @@ export interface ChatSession {
   contextState: ContextConversationState
   topLevelAgentTurnState: SessionTopLevelAgentTurnState
   lastEmittedContextSummaryCompactionId?: string
+  lastEmittedContextSummaryCompactionEpoch?: number
   pendingContextSummaryUiUpdate?: {
     compactionId: string
     summary: string
+    epoch: number
   }
   model: string
   thinkingLevel: number
@@ -217,6 +219,8 @@ export interface PendingToolCall {
   toolCallId: string
   toolName: string
   toolInput: Record<string, unknown>
+  historyToolName?: string
+  historyToolInput?: Record<string, unknown>
   toolFamilyHint?: "mcp" | "edit" | "web_fetch"
   modelCallId: string
   startedEmitted: boolean
@@ -354,6 +358,8 @@ interface PersistedPendingToolCall {
   toolCallId: string
   toolName: string
   toolInput: Record<string, unknown>
+  historyToolName?: string
+  historyToolInput?: Record<string, unknown>
   toolFamilyHint?: "mcp" | "edit" | "web_fetch"
   modelCallId: string
   startedEmitted: boolean
@@ -442,13 +448,15 @@ interface PersistedTopLevelAgentTurnState {
 }
 
 interface PersistedChatSessionV1 {
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4
   conversationId: string
   messages: SessionMessage[]
   messageRecords?: ContextTranscriptRecord[]
   contextState?: ContextConversationState
   topLevelAgentTurnState?: PersistedTopLevelAgentTurnState
   lastEmittedContextSummaryCompactionId?: string
+  lastEmittedContextSummaryCompactionEpoch?: number
+  lastContextSummaryCompactionEpoch?: number
   model: string
   thinkingLevel: number
   isAgentic: boolean
@@ -913,7 +921,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
 
   private serializeSession(session: ChatSession): PersistedChatSessionV1 {
     return {
-      version: 3,
+      version: 4,
       conversationId: session.conversationId,
       messages: session.messages,
       messageRecords: session.messageRecords,
@@ -960,6 +968,11 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       },
       lastEmittedContextSummaryCompactionId:
         session.lastEmittedContextSummaryCompactionId,
+      lastEmittedContextSummaryCompactionEpoch:
+        session.lastEmittedContextSummaryCompactionEpoch,
+      lastContextSummaryCompactionEpoch:
+        session.pendingContextSummaryUiUpdate?.epoch ??
+        session.contextState.compactionEpoch,
       model: session.model,
       thinkingLevel: session.thinkingLevel,
       isAgentic: session.isAgentic,
@@ -973,6 +986,8 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
           toolCallId: toolCall.toolCallId,
           toolName: toolCall.toolName,
           toolInput: toolCall.toolInput,
+          historyToolName: toolCall.historyToolName,
+          historyToolInput: toolCall.historyToolInput,
           toolFamilyHint: toolCall.toolFamilyHint,
           modelCallId: toolCall.modelCallId,
           startedEmitted: toolCall.startedEmitted,
@@ -1171,6 +1186,8 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       records: [...records],
       compactionHistory: [],
       activeCompactionId: undefined,
+      compactionEpoch: 0,
+      lastAppliedCompaction: undefined,
       usageLedger: {},
       toolResultReplacementState: {
         seenToolUseIds: [],
@@ -1272,6 +1289,12 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
     records: ContextTranscriptRecord[],
     previousRecords: ContextTranscriptRecord[] = state.records
   ): boolean {
+    if (
+      state.lastAppliedCompaction &&
+      state.lastAppliedCompaction.recordCount > previousRecords.length
+    ) {
+      return false
+    }
     if (!state.activeCompactionId) return true
     const active = state.compactionHistory.find(
       (commit) => commit.id === state.activeCompactionId
@@ -1330,6 +1353,50 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
         ? {
             ...rawContextState,
             records: messageRecords,
+            compactionEpoch:
+              typeof rawContextState.compactionEpoch === "number" &&
+              rawContextState.compactionEpoch >= 0
+                ? rawContextState.compactionEpoch
+                : 0,
+            lastAppliedCompaction:
+              rawContextState.lastAppliedCompaction &&
+              typeof rawContextState.lastAppliedCompaction === "object" &&
+              (typeof rawContextState.lastAppliedCompaction.compactionId ===
+                "string" ||
+                typeof rawContextState.activeCompactionId === "string")
+                ? {
+                    recordCount:
+                      typeof rawContextState.lastAppliedCompaction
+                        .recordCount === "number" &&
+                      rawContextState.lastAppliedCompaction.recordCount >= 0
+                        ? rawContextState.lastAppliedCompaction.recordCount
+                        : messageRecords.length,
+                    attachmentFingerprint:
+                      typeof rawContextState.lastAppliedCompaction
+                        .attachmentFingerprint === "string"
+                        ? rawContextState.lastAppliedCompaction
+                            .attachmentFingerprint
+                        : "",
+                    appliedAt:
+                      typeof rawContextState.lastAppliedCompaction.appliedAt ===
+                      "number"
+                        ? rawContextState.lastAppliedCompaction.appliedAt
+                        : Date.now(),
+                    compactionId:
+                      typeof rawContextState.lastAppliedCompaction
+                        .compactionId === "string"
+                        ? rawContextState.lastAppliedCompaction.compactionId
+                        : (rawContextState.activeCompactionId as string),
+                    epoch:
+                      typeof rawContextState.lastAppliedCompaction.epoch ===
+                        "number" &&
+                      rawContextState.lastAppliedCompaction.epoch >= 0
+                        ? rawContextState.lastAppliedCompaction.epoch
+                        : typeof rawContextState.compactionEpoch === "number"
+                          ? rawContextState.compactionEpoch
+                          : 0,
+                  }
+                : undefined,
             usageLedger: this.shouldRetainUsageLedger(
               rawContextState,
               messageRecords,
@@ -1465,6 +1532,11 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
         persisted.lastEmittedContextSummaryCompactionId.trim().length > 0
           ? persisted.lastEmittedContextSummaryCompactionId.trim()
           : undefined,
+      lastEmittedContextSummaryCompactionEpoch:
+        typeof persisted.lastEmittedContextSummaryCompactionEpoch ===
+          "number" && persisted.lastEmittedContextSummaryCompactionEpoch >= 0
+          ? persisted.lastEmittedContextSummaryCompactionEpoch
+          : undefined,
       pendingContextSummaryUiUpdate: undefined,
       // Note: We do NOT run enforceToolProtocol here.
       // Deserialized sessions may have legitimate interrupted tool calls that
@@ -1569,6 +1641,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       contextState,
       topLevelAgentTurnState: this.createEmptyTopLevelAgentTurnState(),
       lastEmittedContextSummaryCompactionId: undefined,
+      lastEmittedContextSummaryCompactionEpoch: undefined,
       pendingContextSummaryUiUpdate: undefined,
       model: initialRequest?.model || "claude-sonnet-4.5",
       thinkingLevel: initialRequest?.thinkingLevel || 0,
@@ -1976,7 +2049,9 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
     toolName: string,
     toolInput: Record<string, unknown>,
     toolFamilyHint?: "mcp" | "web_fetch",
-    modelCallId: string = ""
+    modelCallId: string = "",
+    historyToolName?: string,
+    historyToolInput?: Record<string, unknown>
   ): Promise<void> {
     const session = this.getSession(conversationId)
     if (session) {
@@ -2008,6 +2083,8 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
         toolCallId,
         toolName,
         toolInput,
+        historyToolName,
+        historyToolInput,
         toolFamilyHint,
         modelCallId,
         startedEmitted: false,
@@ -2711,6 +2788,13 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       )
     ) {
       session.contextState.records = reconciledRecords
+      const lastApplied = session.contextState.lastAppliedCompaction
+      if (lastApplied) {
+        session.contextState.lastAppliedCompaction = {
+          ...lastApplied,
+          recordCount: reconciledRecords.length,
+        }
+      }
       if (
         !this.shouldRetainUsageLedger(
           session.contextState,

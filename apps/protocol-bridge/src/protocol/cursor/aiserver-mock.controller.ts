@@ -19,9 +19,15 @@ import {
   AvailableModelsResponse_ModelPickerDisplayConfiguration_RoutedModelViewConfigSchema,
   AvailableModelsResponse_ModelPickerDisplayConfiguration_RoutedModelViewConfig_RoutedModelViewToNamedViewButtonSchema,
   CheckQueuePositionResponseSchema,
+  CheckFeatureStatusRequestSchema,
+  CheckFeatureStatusResponseSchema,
+  CheckFeaturesStatusRequestSchema,
+  CheckFeaturesStatusResponseSchema,
+  CheckFeaturesStatusResponse_FeatureStatusSchema,
   GetCurrentPeriodUsageResponseSchema,
   GetDefaultModelResponseSchema,
   GetDefaultModelNudgeDataResponseSchema,
+  GetServerConfigResponseSchema,
   GetEmailResponseSchema,
   GetEmailResponse_SignUpType,
   GetModelLabelsResponseSchema,
@@ -58,6 +64,12 @@ import {
   getCursorDisplayModels,
   resolveCloudCodeModel,
 } from "../../llm/model-registry"
+
+const ENABLED_CURSOR_FEATURES = new Set<string>([
+  "react_shell_tool",
+  "compact_terminal",
+  "long_running_jobs",
+])
 
 /**
  * Centralised mock response defaults.
@@ -573,9 +585,63 @@ export class AiserverMockController {
     this.sendEmpty(res)
   }
 
+  @Post("aiserver.v1.AiService/CheckFeatureStatus")
+  handleCheckFeatureStatus(
+    @Req() req: FastifyRequest,
+    @Res() res: FastifyReply
+  ): void {
+    let featureName = ""
+    const body = req.body
+    if (body instanceof Uint8Array || Buffer.isBuffer(body)) {
+      try {
+        const request = fromBinary(
+          CheckFeatureStatusRequestSchema,
+          new Uint8Array(body)
+        )
+        featureName = request.featureName
+      } catch (error) {
+        this.logger.debug(
+          `CheckFeatureStatus request parse failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+    }
+
+    const response = create(CheckFeatureStatusResponseSchema, {
+      enabled: ENABLED_CURSOR_FEATURES.has(featureName),
+    })
+    this.sendProto(res, CheckFeatureStatusResponseSchema, response)
+  }
+
   @Post("aiserver.v1.AiService/GetFeatureStatuses")
-  handleGetFeatureStatuses(@Res() res: FastifyReply): void {
-    this.sendEmpty(res)
+  handleGetFeatureStatuses(
+    @Req() req: FastifyRequest,
+    @Res() res: FastifyReply
+  ): void {
+    let featureNames: string[] = []
+    const body = req.body
+    if (body instanceof Uint8Array || Buffer.isBuffer(body)) {
+      try {
+        const request = fromBinary(
+          CheckFeaturesStatusRequestSchema,
+          new Uint8Array(body)
+        )
+        featureNames = request.featureNames
+      } catch (error) {
+        this.logger.debug(
+          `GetFeatureStatuses request parse failed: ${error instanceof Error ? error.message : String(error)}`
+        )
+      }
+    }
+
+    const response = create(CheckFeaturesStatusResponseSchema, {
+      featureStatuses: featureNames.map((featureName) =>
+        create(CheckFeaturesStatusResponse_FeatureStatusSchema, {
+          featureName,
+          enabled: ENABLED_CURSOR_FEATURES.has(featureName),
+        })
+      ),
+    })
+    this.sendProto(res, CheckFeaturesStatusResponseSchema, response)
   }
 
   @Post("aiserver.v1.AiService/GetTeamCommands")
@@ -590,7 +656,16 @@ export class AiserverMockController {
 
   @Post("aiserver.v1.AiService/GetServerConfig")
   handleAiGetServerConfig(@Res() res: FastifyReply): void {
-    this.sendEmpty(res)
+    const response = create(GetServerConfigResponseSchema, {
+      configVersion: "protocol-bridge",
+      isDevDoNotUseForSecretThingsBecauseCanBeSpoofedByUsers: true,
+      useNlbForNal: false,
+      runTerminalServerConfig: {
+        compositeShellCommands: ["&&", "||", ";", "|"],
+        safeShellCommands: [],
+      },
+    })
+    this.sendProto(res, GetServerConfigResponseSchema, response)
   }
 
   @Post("aiserver.v1.AiService/GetDefaultModel")
@@ -876,7 +951,16 @@ export class AiserverMockController {
 
   @Post("aiserver.v1.ServerConfigService/GetServerConfig")
   handleServerConfigGetServerConfig(@Res() res: FastifyReply): void {
-    this.sendEmpty(res)
+    const response = create(GetServerConfigResponseSchema, {
+      configVersion: "protocol-bridge",
+      isDevDoNotUseForSecretThingsBecauseCanBeSpoofedByUsers: true,
+      useNlbForNal: false,
+      runTerminalServerConfig: {
+        compositeShellCommands: ["&&", "||", ";", "|"],
+        safeShellCommands: [],
+      },
+    })
+    this.sendProto(res, GetServerConfigResponseSchema, response)
   }
 
   @Post("aiserver.v1.AnalyticsService/FlushEvents")

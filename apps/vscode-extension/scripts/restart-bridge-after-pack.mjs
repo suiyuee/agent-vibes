@@ -317,8 +317,7 @@ function waitForHealth(port, caCertPath, timeoutMs = 15000) {
 
 async function main() {
   if (!fs.existsSync(binaryPath)) {
-    console.warn(`[restart:bridge] Installed bridge not found: ${binaryPath}`)
-    return
+    throw new Error(`Installed bridge not found: ${binaryPath}`)
   }
 
   const { env, port, dataDir, caCertPath } = resolveConfig()
@@ -349,14 +348,15 @@ async function main() {
     return
   }
 
-  console.warn(
-    `[restart:bridge] Bridge restart did not pass health check on port ${port}. ` +
+  throw new Error(
+    `Bridge restart did not pass health check on port ${port}. ` +
       `Check ${LOG_FILE} or run "Agent Vibes: Restart Server" in Cursor.`
   )
 }
 
 main().catch((error) => {
-  console.warn(
-    `[restart:bridge] Best-effort restart failed: ${error instanceof Error ? error.message : String(error)}`
+  console.error(
+    `[restart:bridge] Restart failed: ${error instanceof Error ? error.message : String(error)}`
   )
+  process.exit(1)
 })

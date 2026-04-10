@@ -822,6 +822,14 @@ export class GoogleService {
     return errMsg.includes(this.STREAM_PROGRESS_WATCHDOG_ABORT_PREFIX)
   }
 
+  private isCloudCodeInactivityTimeoutFailure(errMsg: string): boolean {
+    const normalized = errMsg.toLowerCase()
+    return (
+      normalized.includes("cloud code streamgeneratecontent") &&
+      normalized.includes("timeout after")
+    )
+  }
+
   private isRetryableWorkerFailure(errMsg: string): boolean {
     const normalized = errMsg.toLowerCase()
     return (
@@ -832,6 +840,7 @@ export class GoogleService {
       normalized.includes("socket hang up") ||
       normalized.includes("network socket disconnected") ||
       normalized.includes("connection reset by peer") ||
+      this.isCloudCodeInactivityTimeoutFailure(errMsg) ||
       this.isModelCapacityExhausted(errMsg)
     )
   }
@@ -2238,17 +2247,18 @@ export class GoogleService {
   private fromOfficialAntigravityToolName(name: string): string {
     const normalized = this.normalizeCloudCodeToolToken(name)
     const map: Record<string, string> = {
-      view_file: "read_file",
-      list_dir: "list_directory",
-      run_command: "run_terminal_command",
-      send_command_input: "write_shell_stdin",
-      replace_file_content: "edit_file_v2",
-      multi_replace_file_content: "edit_file_v2",
-      write_to_file: "edit_file_v2",
-      search_web: "web_search",
-      read_url_content: "web_fetch",
-      command_status: "run_terminal_command",
-      browser_subagent: "task",
+      view_file: "view_file",
+      list_dir: "list_dir",
+      run_command: "run_command",
+      send_command_input: "send_command_input",
+      replace_file_content: "replace_file_content",
+      multi_replace_file_content: "multi_replace_file_content",
+      write_to_file: "write_to_file",
+      search_web: "search_web",
+      read_url_content: "read_url_content",
+      command_status: "command_status",
+      generate_image: "generate_image",
+      browser_subagent: "browser_subagent",
     }
     return map[normalized] || name
   }
@@ -2259,64 +2269,6 @@ export class GoogleService {
   ): Record<string, unknown> {
     const normalized = this.normalizeCloudCodeToolToken(officialName)
     switch (normalized) {
-      case "view_file":
-        return {
-          path: input.path || input.file_path || input.filePath,
-          start_line: input.start_line || input.startLine,
-          end_line: input.end_line || input.endLine,
-        }
-      case "list_dir":
-        return {
-          path: input.path || input.dir || input.directory,
-          recursive: input.recursive,
-        }
-      case "run_command":
-        return {
-          command: input.command || input.cmd,
-          cwd: input.cwd || input.working_directory || input.workingDirectory,
-        }
-      case "send_command_input":
-        return {
-          shellId:
-            input.shellId ||
-            input.shell_id ||
-            input.command_id ||
-            input.commandId,
-          data: input.data || input.input || input.text,
-        }
-      case "replace_file_content":
-      case "multi_replace_file_content":
-        return {
-          path: input.path || input.file_path || input.filePath,
-          search:
-            input.search || input.old_text || input.oldText || input.target,
-          replace:
-            input.replace ||
-            input.new_text ||
-            input.newText ||
-            input.replacement,
-        }
-      case "write_to_file":
-        return {
-          path: input.path || input.file_path || input.filePath,
-          search: input.search || "",
-          replace:
-            input.content || input.file_text || input.fileText || input.text,
-        }
-      case "search_web":
-        return {
-          query: input.query || input.search_query || input.searchQuery,
-          domain: input.domain,
-        }
-      case "read_url_content":
-        return {
-          url: input.url || input.Url || input.URL,
-        }
-      case "command_status":
-        return {
-          command: input.command || `echo "command_status unsupported"`,
-          cwd: input.cwd,
-        }
       case "browser_subagent":
         return {
           description:
@@ -2325,7 +2277,7 @@ export class GoogleService {
           subagent_type: "browser",
         }
       default:
-        return input
+        return { ...input }
     }
   }
 
@@ -3059,6 +3011,16 @@ export class GoogleService {
             parameters: {
               type: "OBJECT",
               properties: {
+                toolAction: {
+                  type: "STRING",
+                  description:
+                    "Brief 2-5 word summary of what this tool is doing.",
+                },
+                toolSummary: {
+                  type: "STRING",
+                  description:
+                    "Brief 2-5 word noun phrase describing what this tool call is about.",
+                },
                 ...properties,
                 waitForPreviousTools: {
                   type: "BOOLEAN",
@@ -3077,52 +3039,119 @@ export class GoogleService {
       "command_status",
       "Check the status of a previously started command.",
       {
-        command_id: { type: "STRING", description: "Command/process id" },
+        CommandId: { type: "STRING", description: "Command/process id" },
+        OutputCharacterCount: {
+          type: "INTEGER",
+          description: "Optional number of characters to read from output.",
+        },
+        WaitDurationSeconds: {
+          type: "INTEGER",
+          description:
+            "Number of seconds to wait for completion before returning status.",
+        },
       },
-      ["command_id"]
+      ["CommandId", "WaitDurationSeconds"]
     )
     add(
       "generate_image",
       "Generate an image from a prompt.",
-      { prompt: { type: "STRING", description: "Image generation prompt" } },
-      ["prompt"]
+      {
+        Prompt: { type: "STRING", description: "Image generation prompt" },
+        ImageName: {
+          type: "STRING",
+          description: "Artifact file name to save the image under.",
+        },
+        ImagePaths: {
+          type: "ARRAY",
+          description: "Optional absolute image paths to use as references.",
+          items: { type: "STRING" },
+        },
+      },
+      ["Prompt", "ImageName"]
     )
     add(
       "grep_search",
       "Search file contents using ripgrep.",
       {
-        query: { type: "STRING", description: "Search query or regex" },
-        path: { type: "STRING", description: "Path to search in" },
-        case_sensitive: { type: "BOOLEAN" },
+        SearchPath: {
+          type: "STRING",
+          description: "Absolute file or directory path to search within.",
+        },
+        Query: { type: "STRING", description: "Search query or regex." },
+        Includes: {
+          type: "ARRAY",
+          description: "Optional glob patterns to include or exclude.",
+          items: { type: "STRING" },
+        },
+        CaseInsensitive: { type: "BOOLEAN" },
+        IsRegex: { type: "BOOLEAN" },
+        MatchPerLine: { type: "BOOLEAN" },
       },
-      ["query"]
+      ["SearchPath", "Query"]
     )
     add(
       "list_dir",
       "List the contents of a directory.",
       {
-        path: { type: "STRING", description: "Directory path" },
-        recursive: { type: "BOOLEAN" },
+        DirectoryPath: {
+          type: "STRING",
+          description: "Absolute directory path to list.",
+        },
       },
-      ["path"]
+      ["DirectoryPath"]
     )
     add(
       "multi_replace_file_content",
       "Replace one or more text ranges in a file.",
       {
-        path: { type: "STRING" },
-        replacements: {
+        TargetFile: {
+          type: "STRING",
+          description: "Absolute file path to modify.",
+        },
+        Instruction: {
+          type: "STRING",
+          description: "Description of the file changes being made.",
+        },
+        Description: {
+          type: "STRING",
+          description:
+            "Brief user-facing explanation of the edit rationale or context.",
+        },
+        ArtifactMetadata: {
+          type: "OBJECT",
+          description:
+            "Artifact metadata when the target file is an artifact document.",
+          properties: {
+            ArtifactType: {
+              type: "STRING",
+              enum: ["implementation_plan", "walkthrough", "task", "other"],
+            },
+            RequestFeedback: { type: "BOOLEAN" },
+            Summary: { type: "STRING" },
+          },
+        },
+        ReplacementChunks: {
           type: "ARRAY",
           items: {
             type: "OBJECT",
             properties: {
-              search: { type: "STRING" },
-              replace: { type: "STRING" },
+              AllowMultiple: { type: "BOOLEAN" },
+              TargetContent: { type: "STRING" },
+              ReplacementContent: { type: "STRING" },
+              StartLine: { type: "INTEGER" },
+              EndLine: { type: "INTEGER" },
             },
+            required: [
+              "AllowMultiple",
+              "TargetContent",
+              "ReplacementContent",
+              "StartLine",
+              "EndLine",
+            ],
           },
         },
       },
-      ["path", "replacements"]
+      ["TargetFile", "Instruction", "Description", "ReplacementChunks"]
     )
     add(
       "read_url_content",
@@ -3134,20 +3163,61 @@ export class GoogleService {
       "replace_file_content",
       "Replace text in a file.",
       {
-        path: { type: "STRING" },
-        search: { type: "STRING" },
-        replace: { type: "STRING" },
+        TargetFile: {
+          type: "STRING",
+          description: "Absolute file path to modify.",
+        },
+        Instruction: {
+          type: "STRING",
+          description: "Description of the file changes being made.",
+        },
+        Description: {
+          type: "STRING",
+          description:
+            "Brief user-facing explanation of the edit rationale or context.",
+        },
+        AllowMultiple: { type: "BOOLEAN" },
+        TargetContent: { type: "STRING" },
+        ReplacementContent: { type: "STRING" },
+        StartLine: { type: "INTEGER" },
+        EndLine: { type: "INTEGER" },
+        TargetLintErrorIds: {
+          type: "ARRAY",
+          items: { type: "STRING" },
+        },
       },
-      ["path", "search", "replace"]
+      [
+        "TargetFile",
+        "Instruction",
+        "Description",
+        "AllowMultiple",
+        "TargetContent",
+        "ReplacementContent",
+        "StartLine",
+        "EndLine",
+      ]
     )
     add(
       "run_command",
       "Run a shell command in the workspace.",
       {
-        command: { type: "STRING", description: "Command to run" },
-        cwd: { type: "STRING", description: "Working directory" },
+        CommandLine: { type: "STRING", description: "Command to run." },
+        Cwd: { type: "STRING", description: "Working directory." },
+        RequestedTerminalID: {
+          type: "STRING",
+          description: "Optional persistent terminal id to reuse.",
+        },
+        RunPersistent: {
+          type: "BOOLEAN",
+          description: "Whether to keep the command in a persistent terminal.",
+        },
+        SafeToAutoRun: {
+          type: "BOOLEAN",
+          description:
+            "Whether the command is safe enough to run automatically.",
+        },
       },
-      ["command"]
+      ["CommandLine", "Cwd", "SafeToAutoRun"]
     )
     add(
       "search_web",
@@ -3165,29 +3235,64 @@ export class GoogleService {
       "send_command_input",
       "Send input to a running command.",
       {
-        command_id: { type: "STRING" },
-        input: { type: "STRING" },
+        CommandId: { type: "STRING" },
+        Input: { type: "STRING" },
+        Terminate: { type: "BOOLEAN" },
+        WaitMs: { type: "INTEGER" },
+        SafeToAutoRun: { type: "BOOLEAN" },
       },
-      ["command_id", "input"]
+      ["CommandId", "WaitMs", "SafeToAutoRun"]
     )
     add(
       "view_file",
       "Read the contents of a file at the specified path.",
       {
-        path: { type: "STRING", description: "File path" },
-        start_line: { type: "INTEGER" },
-        end_line: { type: "INTEGER" },
+        AbsolutePath: { type: "STRING", description: "Absolute file path." },
+        StartLine: { type: "INTEGER" },
+        EndLine: { type: "INTEGER" },
+        IsSkillFile: { type: "BOOLEAN" },
       },
-      ["path"]
+      ["AbsolutePath"]
     )
     add(
       "write_to_file",
       "Write content to a file.",
       {
-        path: { type: "STRING" },
-        content: { type: "STRING" },
+        TargetFile: {
+          type: "STRING",
+          description: "Absolute file path to create or overwrite.",
+        },
+        Overwrite: {
+          type: "BOOLEAN",
+          description: "Whether to overwrite an existing file.",
+        },
+        CodeContent: {
+          type: "STRING",
+          description: "The full file contents to write.",
+        },
+        Description: {
+          type: "STRING",
+          description:
+            "Brief user-facing explanation of the write rationale or context.",
+        },
+        IsArtifact: {
+          type: "BOOLEAN",
+          description: "Whether the file being written is an artifact.",
+        },
+        ArtifactMetadata: {
+          type: "OBJECT",
+          description: "Artifact metadata when creating an artifact document.",
+          properties: {
+            ArtifactType: {
+              type: "STRING",
+              enum: ["implementation_plan", "walkthrough", "task", "other"],
+            },
+            RequestFeedback: { type: "BOOLEAN" },
+            Summary: { type: "STRING" },
+          },
+        },
       },
-      ["path", "content"]
+      ["TargetFile", "Overwrite", "CodeContent", "Description", "IsArtifact"]
     )
 
     return declarations
@@ -4407,6 +4512,7 @@ export class GoogleService {
     let currentAttemptStartedAt = 0
     let currentAttemptWorkerEmail: string | null = null
     let currentAttemptSawProgress = false
+    let sawAnyStreamProgress = false
     let currentAttemptWatchdog: ReturnType<typeof setTimeout> | null = null
 
     const clearCurrentAttemptWatchdog = () => {
@@ -4453,6 +4559,7 @@ export class GoogleService {
     const push = (...events: string[]) => {
       if (events.length > 0) {
         markEffectiveStreamProgress()
+        sawAnyStreamProgress = true
       }
       eventQueue.push(...events)
       if (resolveWaiting) {
@@ -4534,6 +4641,13 @@ export class GoogleService {
           const errMsg = (err as Error).message || ""
           lastAttemptError =
             err instanceof Error ? err : new Error(errMsg || "stream failed")
+
+          if (
+            currentAttemptSawProgress &&
+            self.isCloudCodeInactivityTimeoutFailure(errMsg)
+          ) {
+            throw new UpstreamRequestAbortedError(errMsg)
+          }
 
           if (
             err instanceof UpstreamRequestAbortedError &&
@@ -5116,6 +5230,12 @@ export class GoogleService {
         typeof finalizedFatalRequestError.message === "string"
           ? finalizedFatalRequestError.message
           : "Cloud Code API streaming failed"
+      if (
+        sawAnyStreamProgress &&
+        this.isCloudCodeInactivityTimeoutFailure(errorMsg)
+      ) {
+        throw new UpstreamRequestAbortedError(errorMsg)
+      }
       this.logger.error(`Cloud Code API failed for Claude model: ${errorMsg}`)
       const userFacingError = errorMsg.includes("request exceeds prompt limit")
         ? "Request context is too large. Please shorten the conversation or start a new chat."

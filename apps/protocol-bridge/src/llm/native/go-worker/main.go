@@ -32,8 +32,8 @@ const (
 	loadCodeAssistCacheTTL     = 10 * time.Second
 	maxRetries                 = 3
 	baseDelay                  = 200 * time.Millisecond
-	streamFirstChunkTimeout    = 20 * time.Second
-	streamIdleTimeout          = 45 * time.Second
+	streamFirstChunkTimeout    = 5 * time.Minute
+	streamIdleTimeout          = 5 * time.Minute
 	quotaResetGraceWindow      = 1500 * time.Millisecond
 	quotaResetRetryDelay       = 5 * time.Second
 	maxErrorBodyBytes          = 240

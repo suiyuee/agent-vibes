@@ -117,6 +117,9 @@ export class ContextManagerService {
         createdAt: baseTimestamp + index,
       })),
       compactionHistory: [],
+      activeCompactionId: undefined,
+      compactionEpoch: 0,
+      lastAppliedCompaction: undefined,
       usageLedger: {},
       toolResultReplacementState: {
         seenToolUseIds: [],

@@ -74,6 +74,7 @@ import {
 import {
   buildToolsForApi,
   resolveCursorToolDefinitionKey,
+  type ToolDefinition,
 } from "./cursor-tool-mapper"
 import { KnowledgeBaseService } from "./knowledge-base.service"
 import { KvStorageService } from "./kv-storage.service"
@@ -348,6 +349,8 @@ interface PreparedToolInvocation {
   activeToolCall: ActiveToolCall
   canonicalToolName: string
   input: Record<string, unknown>
+  historyToolName: string
+  historyToolInput: Record<string, unknown>
   deferredToolFamily?: DeferredToolFamily
   execDispatchTarget?: ExecDispatchTarget
   dispatchErrorMessage?: string
@@ -386,6 +389,27 @@ interface AssistantTurnStreamOutcome {
 interface CanonicalToolInvocation {
   toolName: string
   input: Record<string, unknown>
+  historyToolName?: string
+  historyToolInput?: Record<string, unknown>
+}
+
+type OfficialAntigravityArtifactType =
+  | "implementation_plan"
+  | "walkthrough"
+  | "task"
+  | "other"
+
+interface OfficialAntigravityArtifactMetadata {
+  artifactType: OfficialAntigravityArtifactType
+  requestFeedback?: boolean
+  summary?: string
+}
+
+interface CursorArtifactUiProjection {
+  toolName: "create_plan" | "update_todos"
+  toolInput: Record<string, unknown>
+  content: string
+  toolResultState: { status: ToolResultStatus; message?: string }
 }
 
 interface LegacyWebDocument {
@@ -556,6 +580,28 @@ export class CursorConnectStreamService {
   private readonly TOP_LEVEL_AGENT_MAX_READONLY_TURNS = 18
   private readonly TOP_LEVEL_AGENT_SUMMARY_MEMORY_LIMIT = 8
   private readonly TOOL_BATCH_SUMMARY_DETAILS_LIMIT = 6
+  private readonly CLOUD_CODE_FORCED_SYNTHESIS_BLOCKED_TOOL_NAMES = new Set([
+    "deep_search",
+    "fetch_rules",
+    "file_search",
+    "get_mcp_tools",
+    "glob_search",
+    "go_to_definition",
+    "grep_search",
+    "knowledge_base",
+    "list_directory",
+    "list_mcp_resources",
+    "read_file",
+    "read_file_v2",
+    "read_lints",
+    "read_mcp_resource",
+    "read_project",
+    "read_semsearch_files",
+    "search_symbols",
+    "semantic_search",
+    "web_fetch",
+    "web_search",
+  ])
   private readonly LEGACY_WEB_DOCUMENT_CHUNK_SIZE = 4_000
   private readonly MAX_LEGACY_WEB_DOCUMENTS_PER_CONVERSATION = 12
   private readonly EMPTY_CONTEXT_ATTACHMENT_SNAPSHOT: ContextAttachmentSnapshot =
@@ -1328,12 +1374,12 @@ export class CursorConnectStreamService {
       model: options.model,
     })
     const historyMessages = options.buildMessages(budget)
-    const outgoingMessages = useGoogleContextMessages
-      ? this.buildGoogleOfficialMessages(contextMessages, historyMessages)
-      : ([
-          ...contextMessages,
-          ...historyMessages,
-        ] as CreateMessageDto["messages"])
+    // Cloud Code expects the official per-message transcript shape.
+    // Do not collapse user history or tool_result adjacency will break.
+    const outgoingMessages = [
+      ...contextMessages,
+      ...historyMessages,
+    ] as CreateMessageDto["messages"]
     const historyTokens = historyMessages.length
       ? this.tokenCounter.countMessages(historyMessages as UnifiedMessage[])
       : 0
@@ -1879,9 +1925,21 @@ export class CursorConnectStreamService {
       normalized.startsWith(
         "Cloud Code streamGenerateContent stream failed:"
       ) ||
+      normalized.startsWith(
+        "Cloud Code streamGenerateContent first chunk timeout after"
+      ) ||
+      normalized.startsWith(
+        "Cloud Code streamGenerateContent idle timeout after"
+      ) ||
       normalized.startsWith("Cloud Code API invalid_request_error:") ||
       normalized.startsWith("⚠️ Backend request failed") ||
       normalized.includes("Cloud Code streamGenerateContent stream failed:") ||
+      normalized.includes(
+        "Cloud Code streamGenerateContent first chunk timeout after"
+      ) ||
+      normalized.includes(
+        "Cloud Code streamGenerateContent idle timeout after"
+      ) ||
       normalized.includes("Cloud Code API invalid_request_error:") ||
       normalized.includes(
         'Invalid JSON payload received. Unknown name "__removedFunctionResponses"'
@@ -2320,17 +2378,35 @@ export class CursorConnectStreamService {
 
   private queuePendingContextSummaryUiUpdate(
     session: ChatSession,
-    conversationId: string
+    conversationId: string,
+    options?: {
+      compactionId?: string
+      summary?: string
+      epoch?: number
+    }
   ): void {
-    const activeCompactionId = session.contextState.activeCompactionId
+    const activeCompactionId =
+      options?.compactionId || session.contextState.activeCompactionId
     if (!activeCompactionId) {
       return
     }
-    if (session.lastEmittedContextSummaryCompactionId === activeCompactionId) {
+
+    const epoch =
+      typeof options?.epoch === "number"
+        ? options.epoch
+        : session.contextState.compactionEpoch || 0
+
+    if (
+      session.lastEmittedContextSummaryCompactionId === activeCompactionId &&
+      session.lastEmittedContextSummaryCompactionEpoch === epoch &&
+      !session.pendingContextSummaryUiUpdate
+    ) {
       return
     }
     if (
-      session.pendingContextSummaryUiUpdate?.compactionId === activeCompactionId
+      session.pendingContextSummaryUiUpdate?.compactionId ===
+        activeCompactionId &&
+      session.pendingContextSummaryUiUpdate.epoch === epoch
     ) {
       return
     }
@@ -2338,13 +2414,15 @@ export class CursorConnectStreamService {
     const activeCommit = session.contextState.compactionHistory.find(
       (commit) => commit.id === activeCompactionId
     )
-    if (!activeCommit || !activeCommit.summary.trim()) {
+    const summary = options?.summary || activeCommit?.summary
+    if (!summary?.trim()) {
       return
     }
 
     session.pendingContextSummaryUiUpdate = {
-      compactionId: activeCommit.id,
-      summary: activeCommit.summary,
+      compactionId: activeCompactionId,
+      summary,
+      epoch,
     }
     this.sessionManager.markSessionDirty(conversationId)
   }
@@ -2363,6 +2441,7 @@ export class CursorConnectStreamService {
     yield this.grpcService.createSummaryCompletedResponse()
 
     session.lastEmittedContextSummaryCompactionId = pending.compactionId
+    session.lastEmittedContextSummaryCompactionEpoch = pending.epoch
     session.pendingContextSummaryUiUpdate = undefined
     this.sessionManager.markSessionDirty(conversationId)
     this.logger.log(
@@ -2395,9 +2474,13 @@ export class CursorConnectStreamService {
         strategy: options?.strategy || "auto",
       }
     )
-    if (primary.wasCompacted) {
+    if (primary.appliedCompaction) {
       this.sessionManager.markContextStateDirty(session.conversationId)
-      this.queuePendingContextSummaryUiUpdate(session, session.conversationId)
+      this.queuePendingContextSummaryUiUpdate(session, session.conversationId, {
+        compactionId: primary.appliedCompaction.commit.id,
+        summary: primary.appliedCompaction.commit.summary,
+        epoch: session.contextState.compactionEpoch || 0,
+      })
       this.logger.log(
         `Applied context compaction (${contextLabel}): estimated ${primary.estimatedTokens} tokens after projection`
       )
@@ -3488,6 +3571,7 @@ ${raw}
     return (
       normalized.includes("write") ||
       normalized.includes("edit") ||
+      normalized.includes("replace") ||
       normalized.includes("delete")
     )
   }
@@ -3524,12 +3608,17 @@ ${raw}
       return content
     }
 
+    const targetFile =
+      typeof toolInput.TargetFile === "string" ? toolInput.TargetFile : ""
     const target =
       typeof toolInput.path === "string" && toolInput.path.length > 0
         ? toolInput.path
-        : typeof toolInput.command === "string" && toolInput.command.length > 0
-          ? `command: ${toolInput.command.slice(0, 180)}`
-          : "(unknown path)"
+        : targetFile.length > 0
+          ? targetFile
+          : typeof toolInput.command === "string" &&
+              toolInput.command.length > 0
+            ? `command: ${toolInput.command.slice(0, 180)}`
+            : "(unknown path)"
     const lines = content.split(/\r?\n/)
     const totalLines = lines.length
 
@@ -3667,7 +3756,14 @@ ${raw}
   ): string {
     if (
       this.isMutatingFileTool(toolName) &&
-      this.pickFirstString(toolInput, ["path", "file_path", "filePath"])
+      this.pickFirstString(toolInput, [
+        "path",
+        "file_path",
+        "filePath",
+        "TargetFile",
+        "targetFile",
+        "target_file",
+      ])
     ) {
       return this.formatMutatingFileToolResultForHistory(
         toolName,
@@ -3779,7 +3875,14 @@ ${raw}
     toolResultState?: { status: ToolResultStatus; message?: string }
   ): string {
     const path =
-      this.pickFirstString(toolInput, ["path", "file_path", "filePath"]) || ""
+      this.pickFirstString(toolInput, [
+        "path",
+        "file_path",
+        "filePath",
+        "TargetFile",
+        "targetFile",
+        "target_file",
+      ]) || ""
     const normalizedToolName = (toolName || "file_tool").trim() || "file_tool"
     const warningMarker = "\n\n[edit_apply_warning] "
     const warningIdx = content.indexOf(warningMarker)
@@ -3949,6 +4052,128 @@ ${raw}
     }
   }
 
+  private pickFirstRawString(
+    source: Record<string, unknown>,
+    keys: string[],
+    options?: { allowEmpty?: boolean }
+  ): string | undefined {
+    const allowEmpty = options?.allowEmpty ?? false
+    for (const key of keys) {
+      const raw = source[key]
+      if (typeof raw !== "string") continue
+      if (allowEmpty || raw.length > 0) {
+        return raw
+      }
+    }
+    return undefined
+  }
+
+  private resolveContentLineRange(
+    content: string,
+    startLine?: number,
+    endLine?: number
+  ): { startOffset: number; endOffset: number; warning?: string } {
+    const lineStarts = [0]
+    for (let index = 0; index < content.length; index++) {
+      if (content[index] === "\n") {
+        lineStarts.push(index + 1)
+      }
+    }
+
+    const totalLines = Math.max(1, lineStarts.length)
+    const resolvedStartLine = startLine ?? 1
+    const resolvedEndLine = endLine ?? totalLines
+
+    if (
+      !Number.isFinite(resolvedStartLine) ||
+      !Number.isFinite(resolvedEndLine) ||
+      resolvedStartLine < 1 ||
+      resolvedEndLine < resolvedStartLine ||
+      resolvedEndLine > totalLines
+    ) {
+      return {
+        startOffset: 0,
+        endOffset: content.length,
+        warning: `edit_file line range ${resolvedStartLine}-${resolvedEndLine} is invalid for ${totalLines} line(s)`,
+      }
+    }
+
+    const startOffset = lineStarts[resolvedStartLine - 1] ?? 0
+    const endOffset =
+      resolvedEndLine < totalLines
+        ? (lineStarts[resolvedEndLine] ?? content.length)
+        : content.length
+
+    return {
+      startOffset,
+      endOffset,
+    }
+  }
+
+  private applySearchReplaceWithinRange(
+    content: string,
+    options: {
+      searchText: string
+      replaceText: string
+      allowMultiple?: boolean
+      startLine?: number
+      endLine?: number
+      warningPrefix: string
+    }
+  ): { fileText: string; warning?: string } {
+    const searchText = options.searchText
+    const replaceText = options.replaceText
+    const allowMultiple = options.allowMultiple || false
+
+    if (searchText.length === 0) {
+      return {
+        fileText: content,
+        warning: `${options.warningPrefix} has empty target content`,
+      }
+    }
+
+    const range = this.resolveContentLineRange(
+      content,
+      options.startLine,
+      options.endLine
+    )
+    if (range.warning) {
+      return {
+        fileText: content,
+        warning: range.warning,
+      }
+    }
+
+    const targetSlice = content.slice(range.startOffset, range.endOffset)
+    const occurrenceCount = this.countSubstringOccurrences(
+      targetSlice,
+      searchText
+    )
+    if (occurrenceCount === 0) {
+      return {
+        fileText: content,
+        warning: `${options.warningPrefix} target content not found in specified line range`,
+      }
+    }
+    if (!allowMultiple && occurrenceCount > 1) {
+      return {
+        fileText: content,
+        warning: `${options.warningPrefix} matched ${occurrenceCount} times in specified line range; expected unique match`,
+      }
+    }
+
+    const replacedSlice = allowMultiple
+      ? targetSlice.split(searchText).join(replaceText)
+      : targetSlice.replace(searchText, replaceText)
+
+    return {
+      fileText:
+        content.slice(0, range.startOffset) +
+        replacedSlice +
+        content.slice(range.endOffset),
+    }
+  }
+
   /**
    * Build full file text for edit/edit_file/edit_file_v2 tools.
    * Protocol requirement: writeArgs.fileText must be the complete file content,
@@ -3961,21 +4186,169 @@ ${raw}
     const explicitFullFileText =
       typeof toolInput.file_text === "string" ? toolInput.file_text : undefined
     if (explicitFullFileText !== undefined) {
+      const overwrite = this.pickFirstBoolean(
+        toolInput as Record<string, unknown>,
+        ["overwrite", "Overwrite"]
+      )
+      if (beforeContent.length > 0 && overwrite !== true) {
+        return {
+          fileText: beforeContent,
+          warning:
+            "write_to_file target already exists and requires overwrite=true; no changes applied",
+        }
+      }
       return { fileText: explicitFullFileText }
     }
 
+    const rawReplacementChunks = Array.isArray(
+      (toolInput as Record<string, unknown>).replacementChunks
+    )
+      ? ((toolInput as Record<string, unknown>).replacementChunks as unknown[])
+      : []
+    if (rawReplacementChunks.length > 0) {
+      const normalizedChunks = rawReplacementChunks.map((rawChunk, index) => ({
+        rawChunk,
+        index,
+      }))
+      const orderedChunks = normalizedChunks.every(({ rawChunk }) => {
+        if (!rawChunk || typeof rawChunk !== "object") return false
+        const chunk = rawChunk as Record<string, unknown>
+        return (
+          this.pickFirstNumber(chunk, [
+            "startLine",
+            "start_line",
+            "StartLine",
+          ]) != null &&
+          this.pickFirstNumber(chunk, ["endLine", "end_line", "EndLine"]) !=
+            null
+        )
+      })
+        ? [...normalizedChunks].sort((left, right) => {
+            const leftChunk = left.rawChunk as Record<string, unknown>
+            const rightChunk = right.rawChunk as Record<string, unknown>
+            const leftStart =
+              this.pickFirstNumber(leftChunk, [
+                "startLine",
+                "start_line",
+                "StartLine",
+              ]) || 0
+            const rightStart =
+              this.pickFirstNumber(rightChunk, [
+                "startLine",
+                "start_line",
+                "StartLine",
+              ]) || 0
+            if (rightStart !== leftStart) return rightStart - leftStart
+
+            const leftEnd =
+              this.pickFirstNumber(leftChunk, [
+                "endLine",
+                "end_line",
+                "EndLine",
+              ]) || 0
+            const rightEnd =
+              this.pickFirstNumber(rightChunk, [
+                "endLine",
+                "end_line",
+                "EndLine",
+              ]) || 0
+            if (rightEnd !== leftEnd) return rightEnd - leftEnd
+            return right.index - left.index
+          })
+        : normalizedChunks
+
+      let nextContent = beforeContent
+      for (const { rawChunk, index } of orderedChunks) {
+        if (!rawChunk || typeof rawChunk !== "object") {
+          return {
+            fileText: beforeContent,
+            warning: `edit_file replacement chunk ${index + 1} is invalid`,
+          }
+        }
+        const chunk = rawChunk as Record<string, unknown>
+        const searchText = this.pickFirstRawString(chunk, [
+          "targetContent",
+          "target_content",
+          "TargetContent",
+          "search",
+        ])
+        const replaceText = this.pickFirstRawString(
+          chunk,
+          [
+            "replacementContent",
+            "replacement_content",
+            "ReplacementContent",
+            "replace",
+          ],
+          { allowEmpty: true }
+        )
+        const allowMultiple = this.pickFirstBoolean(chunk, [
+          "allowMultiple",
+          "allow_multiple",
+          "AllowMultiple",
+        ])
+        const startLine = this.pickFirstNumber(chunk, [
+          "startLine",
+          "start_line",
+          "StartLine",
+        ])
+        const endLine = this.pickFirstNumber(chunk, [
+          "endLine",
+          "end_line",
+          "EndLine",
+        ])
+
+        if (searchText === undefined || replaceText === undefined) {
+          return {
+            fileText: beforeContent,
+            warning: `edit_file replacement chunk ${index + 1} is missing target/replacement content`,
+          }
+        }
+        const chunkEdit = this.applySearchReplaceWithinRange(nextContent, {
+          searchText,
+          replaceText,
+          allowMultiple,
+          startLine,
+          endLine,
+          warningPrefix: `edit_file replacement chunk ${index + 1}`,
+        })
+        if (chunkEdit.warning) {
+          return {
+            fileText: beforeContent,
+            warning: chunkEdit.warning,
+          }
+        }
+
+        nextContent = chunkEdit.fileText
+      }
+
+      return { fileText: nextContent }
+    }
+
     const searchText =
-      typeof toolInput.search === "string"
-        ? toolInput.search
-        : typeof toolInput.old_text === "string"
-          ? toolInput.old_text
-          : undefined
+      this.pickFirstRawString(toolInput as Record<string, unknown>, [
+        "search",
+        "old_text",
+      ]) ?? undefined
     const replaceText =
-      typeof toolInput.replace === "string"
-        ? toolInput.replace
-        : typeof toolInput.new_text === "string"
-          ? toolInput.new_text
-          : undefined
+      this.pickFirstRawString(
+        toolInput as Record<string, unknown>,
+        ["replace", "new_text"],
+        { allowEmpty: true }
+      ) ?? undefined
+    const allowMultiple = this.pickFirstBoolean(
+      toolInput as Record<string, unknown>,
+      ["allow_multiple", "allowMultiple", "AllowMultiple"]
+    )
+    const startLine = this.pickFirstNumber(
+      toolInput as Record<string, unknown>,
+      ["start_line", "startLine", "StartLine"]
+    )
+    const endLine = this.pickFirstNumber(toolInput as Record<string, unknown>, [
+      "end_line",
+      "endLine",
+      "EndLine",
+    ])
 
     if (searchText === undefined || replaceText === undefined) {
       return {
@@ -3986,10 +4359,7 @@ ${raw}
     }
 
     if (searchText.length === 0) {
-      // When beforeContent is empty (new file creation) and search is empty,
-      // this is a valid "create new file" pattern: the LLM passes old_text=""
-      // + new_text="content" to write the entire file. Allow it through.
-      if (beforeContent.length === 0 && replaceText.length > 0) {
+      if (beforeContent.length === 0) {
         return { fileText: replaceText }
       }
       return {
@@ -3999,26 +4369,14 @@ ${raw}
       }
     }
 
-    const occurrenceCount = this.countSubstringOccurrences(
-      beforeContent,
-      searchText
-    )
-    if (occurrenceCount === 0) {
-      return {
-        fileText: beforeContent,
-        warning: "edit_file search text not found; no changes applied",
-      }
-    }
-    if (occurrenceCount > 1) {
-      return {
-        fileText: beforeContent,
-        warning: `edit_file search text matched ${occurrenceCount} times; expected unique match`,
-      }
-    }
-
-    return {
-      fileText: beforeContent.replace(searchText, replaceText),
-    }
+    return this.applySearchReplaceWithinRange(beforeContent, {
+      searchText,
+      replaceText,
+      allowMultiple,
+      startLine,
+      endLine,
+      warningPrefix: "edit_file search text",
+    })
   }
 
   private normalizeInlineWebToolFamily(
@@ -4149,6 +4507,326 @@ ${raw}
     return true
   }
 
+  private normalizeOfficialAntigravityArtifactType(
+    value: string
+  ): OfficialAntigravityArtifactType | undefined {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+    if (
+      normalized === "implementation_plan" ||
+      normalized === "walkthrough" ||
+      normalized === "task" ||
+      normalized === "other"
+    ) {
+      return normalized
+    }
+    return undefined
+  }
+
+  private extractOfficialAntigravityArtifactMetadata(
+    input: Record<string, unknown>
+  ): OfficialAntigravityArtifactMetadata | undefined {
+    const raw =
+      (input.ArtifactMetadata as Record<string, unknown> | undefined) ||
+      (input.artifactMetadata as Record<string, unknown> | undefined) ||
+      (input.artifact_metadata as Record<string, unknown> | undefined)
+    if (!raw || typeof raw !== "object") return undefined
+
+    const artifactTypeValue = this.pickFirstString(raw, [
+      "ArtifactType",
+      "artifactType",
+      "artifact_type",
+    ])
+    const artifactType = artifactTypeValue
+      ? this.normalizeOfficialAntigravityArtifactType(artifactTypeValue)
+      : undefined
+    if (!artifactType) return undefined
+
+    const summary = this.pickFirstString(raw, ["Summary", "summary"]) || ""
+    const requestFeedback = this.pickFirstBoolean(raw, [
+      "RequestFeedback",
+      "requestFeedback",
+      "request_feedback",
+    ])
+
+    return {
+      artifactType,
+      ...(summary ? { summary } : {}),
+      ...(typeof requestFeedback === "boolean" ? { requestFeedback } : {}),
+    }
+  }
+
+  private buildCanonicalOfficialAntigravityEditMetadata(
+    input: Record<string, unknown>,
+    pathValue: string
+  ): Record<string, unknown> {
+    const metadata = this.extractOfficialAntigravityArtifactMetadata(input)
+    const description =
+      this.pickFirstString(input, ["Description", "description"]) || ""
+    const instruction =
+      this.pickFirstString(input, ["Instruction", "instruction"]) || ""
+    const overwrite = this.pickFirstBoolean(input, ["Overwrite", "overwrite"])
+    const isArtifact = this.pickFirstBoolean(input, [
+      "IsArtifact",
+      "isArtifact",
+      "is_artifact",
+    ])
+
+    return {
+      path: pathValue,
+      ...(description ? { description } : {}),
+      ...(instruction ? { instruction } : {}),
+      ...(typeof overwrite === "boolean"
+        ? { overwrite, Overwrite: overwrite }
+        : {}),
+      ...(typeof isArtifact === "boolean"
+        ? { isArtifact, is_artifact: isArtifact, IsArtifact: isArtifact }
+        : {}),
+      ...(metadata
+        ? {
+            artifactMetadata: metadata,
+            artifact_metadata: metadata,
+            ArtifactMetadata: {
+              ArtifactType: metadata.artifactType,
+              ...(typeof metadata.requestFeedback === "boolean"
+                ? { RequestFeedback: metadata.requestFeedback }
+                : {}),
+              ...(metadata.summary ? { Summary: metadata.summary } : {}),
+            },
+          }
+        : {}),
+    }
+  }
+
+  private pickOfficialAntigravityFilePath(
+    input: Record<string, unknown>
+  ): string {
+    return (
+      this.pickFirstString(input, [
+        "TargetFile",
+        "targetFile",
+        "target_file",
+        "AbsolutePath",
+        "absolutePath",
+        "absolute_path",
+        "DirectoryPath",
+        "directoryPath",
+        "directory_path",
+        "path",
+        "filePath",
+        "file_path",
+      ]) || ""
+    )
+  }
+
+  private deriveArtifactTitleFromMarkdown(
+    markdown: string,
+    fallbackPath: string
+  ): string {
+    const headingMatch = markdown.match(/^\s*#\s+(.+?)\s*$/m)
+    if (headingMatch?.[1]) {
+      return headingMatch[1].trim()
+    }
+
+    const base = path.basename(
+      fallbackPath || "artifact",
+      path.extname(fallbackPath || "artifact")
+    )
+    return base.replace(/[_-]+/g, " ").trim() || "Artifact"
+  }
+
+  private parseMarkdownTodoItemsForArtifact(
+    markdown: string,
+    idPrefix: string
+  ): Array<Record<string, unknown>> {
+    const lines = markdown.split(/\r?\n/)
+    const checkboxPattern = /^\s*(?:[-*+]|\d+\.)\s+\[([ xX/])\]\s+(.+?)\s*$/
+    const bulletPattern = /^\s*(?:[-*+]|\d+\.)\s+(.+?)\s*$/
+    let inCodeFence = false
+    let hasCheckboxItems = false
+
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        inCodeFence = !inCodeFence
+        continue
+      }
+      if (inCodeFence) continue
+      if (checkboxPattern.test(line)) {
+        hasCheckboxItems = true
+        break
+      }
+    }
+
+    const todos: Array<Record<string, unknown>> = []
+    inCodeFence = false
+    for (const line of lines) {
+      if (/^\s*```/.test(line)) {
+        inCodeFence = !inCodeFence
+        continue
+      }
+      if (inCodeFence) continue
+
+      const checkboxMatch = line.match(checkboxPattern)
+      if (checkboxMatch) {
+        const statusToken = (checkboxMatch[1] || " ").trim().toLowerCase()
+        const content = (checkboxMatch[2] || "").trim()
+        if (!content) continue
+        const slug = content
+          .toLowerCase()
+          .replace(/[`*_~[\]()]/g, "")
+          .replace(/[^a-z0-9]+/g, "_")
+          .replace(/^_+|_+$/g, "")
+          .slice(0, 48)
+        todos.push({
+          id: `${idPrefix}_${todos.length + 1}${slug ? `_${slug}` : ""}`,
+          content,
+          status:
+            statusToken === "x"
+              ? "completed"
+              : statusToken === "/"
+                ? "in_progress"
+                : "pending",
+          dependencies: [],
+        })
+        continue
+      }
+
+      if (hasCheckboxItems) continue
+
+      const bulletMatch = line.match(bulletPattern)
+      if (!bulletMatch) continue
+      const content = (bulletMatch[1] || "").trim()
+      if (!content || content.startsWith("#")) continue
+      const slug = content
+        .toLowerCase()
+        .replace(/[`*_~[\]()]/g, "")
+        .replace(/[^a-z0-9]+/g, "_")
+        .replace(/^_+|_+$/g, "")
+        .slice(0, 48)
+      todos.push({
+        id: `${idPrefix}_${todos.length + 1}${slug ? `_${slug}` : ""}`,
+        content,
+        status: "pending",
+        dependencies: [],
+      })
+    }
+
+    return todos
+  }
+
+  private buildCursorArtifactUiProjection(
+    conversationId: string,
+    pendingToolCall: PendingToolCall,
+    afterContent: string
+  ): CursorArtifactUiProjection | null {
+    const metadata = this.extractOfficialAntigravityArtifactMetadata(
+      pendingToolCall.toolInput
+    )
+    const artifactType = metadata?.artifactType
+    if (artifactType !== "implementation_plan" && artifactType !== "task") {
+      return null
+    }
+
+    const artifactPath =
+      this.pickFirstString(pendingToolCall.toolInput, [
+        "path",
+        "filePath",
+        "file_path",
+        "TargetFile",
+      ]) || ""
+    const description =
+      this.pickFirstString(pendingToolCall.toolInput, [
+        "description",
+        "Description",
+      ]) || ""
+
+    if (artifactType === "implementation_plan") {
+      const todos = this.parseMarkdownTodoItemsForArtifact(
+        afterContent,
+        "artifact_plan"
+      )
+      const title = this.deriveArtifactTitleFromMarkdown(
+        afterContent,
+        artifactPath
+      )
+      const overview = metadata?.summary || description || title
+      const toolInput: Record<string, unknown> = {
+        title,
+        name: title,
+        plan: afterContent,
+        overview,
+        description: overview,
+        steps: todos
+          .map((todo) =>
+            this.pickFirstString(todo, ["content", "text", "title"])
+          )
+          .filter((value): value is string => !!value),
+        todos,
+      }
+      if (artifactPath) {
+        toolInput.planUri = artifactPath
+        toolInput.plan_uri = artifactPath
+      }
+      return {
+        toolName: "create_plan",
+        toolInput,
+        content: artifactPath
+          ? `[create_plan success]\nplan_uri: ${artifactPath}`
+          : "[create_plan success]",
+        toolResultState: { status: "success" },
+      }
+    }
+
+    let todos = this.parseMarkdownTodoItemsForArtifact(
+      afterContent,
+      "artifact_task"
+    )
+    if (todos.length === 0) {
+      const fallbackContent =
+        metadata?.summary ||
+        description ||
+        this.deriveArtifactTitleFromMarkdown(afterContent, artifactPath)
+      todos = [
+        {
+          id: "artifact_task_1",
+          content: fallbackContent,
+          status: "pending",
+          dependencies: [],
+        },
+      ]
+    }
+
+    const toolInput: Record<string, unknown> = {
+      merge: false,
+      todos,
+    }
+    const todoWriteResult = this.executeInlineTodoWrite(
+      conversationId,
+      toolInput
+    )
+    return {
+      toolName: "update_todos",
+      toolInput,
+      content: todoWriteResult.content,
+      toolResultState: todoWriteResult.state,
+    }
+  }
+
+  private shouldProjectOfficialArtifactAsCursorUi(
+    toolName: string,
+    toolInput: Record<string, unknown>
+  ): boolean {
+    if (!this.isEditToolInvocation(toolName)) return false
+    const metadata = this.extractOfficialAntigravityArtifactMetadata(toolInput)
+    return (
+      metadata?.artifactType === "implementation_plan" ||
+      metadata?.artifactType === "task"
+    )
+  }
+
   private canonicalizeOfficialAntigravityToolInvocation(
     toolName: string,
     input: Record<string, unknown>
@@ -4158,69 +4836,208 @@ ${raw}
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "_")
       .replace(/^_+|_+$/g, "")
+    const historyToolInput = { ...input }
+    const historyToolName = toolName
+    const filePath = this.pickOfficialAntigravityFilePath(input)
 
     switch (normalized) {
       case "view_file":
         return {
           toolName: "read_file",
           input: {
-            path: input.path || input.file_path || input.filePath,
-            start_line: input.start_line || input.startLine,
-            end_line: input.end_line || input.endLine,
+            path: filePath,
+            start_line: input.StartLine || input.start_line || input.startLine,
+            end_line: input.EndLine || input.end_line || input.endLine,
+            is_skill_file:
+              input.IsSkillFile || input.is_skill_file || input.isSkillFile,
           },
+          historyToolName,
+          historyToolInput,
         }
       case "list_dir":
         return {
           toolName: "list_directory",
           input: {
-            path: input.path || input.dir || input.directory,
+            path: filePath,
             recursive: input.recursive,
           },
+          historyToolName,
+          historyToolInput,
         }
       case "run_command":
         return {
           toolName: "run_terminal_command",
           input: {
-            command: input.command || input.cmd,
-            cwd: input.cwd || input.working_directory || input.workingDirectory,
+            command: input.CommandLine || input.command || input.cmd,
+            cwd:
+              input.Cwd ||
+              input.cwd ||
+              input.working_directory ||
+              input.workingDirectory,
+            safeToAutoRun:
+              input.SafeToAutoRun ||
+              input.safeToAutoRun ||
+              input.safe_to_auto_run,
+            runPersistent:
+              input.RunPersistent ||
+              input.runPersistent ||
+              input.run_persistent,
+            requestedTerminalId:
+              input.RequestedTerminalID ||
+              input.requestedTerminalId ||
+              input.requested_terminal_id,
           },
+          historyToolName,
+          historyToolInput,
         }
       case "send_command_input":
         return {
           toolName: "write_shell_stdin",
           input: {
             shellId:
+              input.CommandId ||
               input.shellId ||
               input.shell_id ||
               input.command_id ||
               input.commandId,
-            data: input.data || input.input || input.text,
+            data: input.Input || input.data || input.input || input.text,
+            terminate:
+              input.Terminate || input.terminate || input.shouldTerminate,
+            wait_ms: input.WaitMs || input.waitMs || input.wait_ms,
+            safeToAutoRun:
+              input.SafeToAutoRun ||
+              input.safeToAutoRun ||
+              input.safe_to_auto_run,
           },
+          historyToolName,
+          historyToolInput,
         }
       case "replace_file_content":
-      case "multi_replace_file_content":
         return {
           toolName: "edit_file_v2",
           input: {
-            path: input.path || input.file_path || input.filePath,
+            ...this.buildCanonicalOfficialAntigravityEditMetadata(
+              input,
+              filePath
+            ),
             search:
-              input.search || input.old_text || input.oldText || input.target,
+              input.TargetContent ||
+              input.targetContent ||
+              input.target_content ||
+              input.search ||
+              input.old_text ||
+              input.oldText ||
+              input.target,
             replace:
-              input.replace ||
-              input.new_text ||
-              input.newText ||
-              input.replacement,
+              this.pickFirstRawString(
+                input,
+                [
+                  "ReplacementContent",
+                  "replacementContent",
+                  "replacement_content",
+                  "replace",
+                  "new_text",
+                  "newText",
+                  "replacement",
+                ],
+                { allowEmpty: true }
+              ) ?? undefined,
+            allow_multiple: this.pickFirstBoolean(input, [
+              "AllowMultiple",
+              "allowMultiple",
+              "allow_multiple",
+            ]),
+            start_line: this.pickFirstNumber(input, [
+              "StartLine",
+              "startLine",
+              "start_line",
+            ]),
+            end_line: this.pickFirstNumber(input, [
+              "EndLine",
+              "endLine",
+              "end_line",
+            ]),
+            target_lint_error_ids:
+              input.TargetLintErrorIds ||
+              input.targetLintErrorIds ||
+              input.target_lint_error_ids,
           },
+          historyToolName,
+          historyToolInput,
         }
+      case "multi_replace_file_content": {
+        const rawChunks = Array.isArray(input.ReplacementChunks)
+          ? input.ReplacementChunks
+          : Array.isArray(input.replacementChunks)
+            ? input.replacementChunks
+            : []
+        const replacementChunks = rawChunks
+          .filter(
+            (entry): entry is Record<string, unknown> =>
+              !!entry && typeof entry === "object"
+          )
+          .map((chunk) => ({
+            allowMultiple: this.pickFirstBoolean(chunk, [
+              "AllowMultiple",
+              "allowMultiple",
+              "allow_multiple",
+            ]),
+            targetContent: this.pickFirstRawString(chunk, [
+              "TargetContent",
+              "targetContent",
+              "target_content",
+              "search",
+            ]),
+            replacementContent: this.pickFirstRawString(
+              chunk,
+              [
+                "ReplacementContent",
+                "replacementContent",
+                "replacement_content",
+                "replace",
+              ],
+              { allowEmpty: true }
+            ),
+            startLine: this.pickFirstNumber(chunk, [
+              "StartLine",
+              "startLine",
+              "start_line",
+            ]),
+            endLine: this.pickFirstNumber(chunk, [
+              "EndLine",
+              "endLine",
+              "end_line",
+            ]),
+          }))
+        return {
+          toolName: "edit_file_v2",
+          input: {
+            ...this.buildCanonicalOfficialAntigravityEditMetadata(
+              input,
+              filePath
+            ),
+            replacementChunks,
+          },
+          historyToolName,
+          historyToolInput,
+        }
+      }
       case "write_to_file":
         return {
           toolName: "edit_file_v2",
           input: {
-            path: input.path || input.file_path || input.filePath,
-            search: input.search || "",
-            replace:
-              input.content || input.file_text || input.fileText || input.text,
+            ...this.buildCanonicalOfficialAntigravityEditMetadata(
+              input,
+              filePath
+            ),
+            file_text: this.pickFirstRawString(
+              input,
+              ["CodeContent", "content", "file_text", "fileText", "text"],
+              { allowEmpty: true }
+            ),
           },
+          historyToolName,
+          historyToolInput,
         }
       case "search_web":
         return {
@@ -4229,19 +5046,48 @@ ${raw}
             query: input.query || input.search_query || input.searchQuery,
             domain: input.domain,
           },
+          historyToolName,
+          historyToolInput,
         }
       case "read_url_content":
         return {
           toolName: "web_fetch",
           input: { url: input.url || input.Url || input.URL },
+          historyToolName,
+          historyToolInput,
         }
       case "command_status":
         return {
           toolName: "run_terminal_command",
           input: {
-            command: input.command || "echo 'command_status unsupported'",
-            cwd: input.cwd,
+            command:
+              input.command ||
+              `echo "command_status unsupported for ${String(input.CommandId || input.commandId || input.command_id || "")}"`,
+            cwd: input.cwd || input.Cwd,
+            commandId: input.CommandId || input.commandId || input.command_id,
+            waitDurationSeconds:
+              input.WaitDurationSeconds ||
+              input.waitDurationSeconds ||
+              input.wait_duration_seconds,
+            outputCharacterCount:
+              input.OutputCharacterCount ||
+              input.outputCharacterCount ||
+              input.output_character_count,
           },
+          historyToolName,
+          historyToolInput,
+        }
+      case "generate_image":
+        return {
+          toolName: "generate_image",
+          input: {
+            prompt: input.Prompt || input.prompt,
+            image_name: input.ImageName || input.imageName || input.image_name,
+            image_paths:
+              input.ImagePaths || input.imagePaths || input.image_paths,
+          },
+          historyToolName,
+          historyToolInput,
         }
       case "browser_subagent":
         return {
@@ -4255,6 +5101,8 @@ ${raw}
             prompt: input.Task || input.task || input.description,
             subagent_type: "browser",
           },
+          historyToolName,
+          historyToolInput,
         }
       default:
         return null
@@ -8740,6 +9588,8 @@ ${raw}
       activeToolCall: toolCall,
       canonicalToolName,
       input,
+      historyToolName: canonicalInvocation.historyToolName || canonicalToolName,
+      historyToolInput: canonicalInvocation.historyToolInput || input,
       deferredToolFamily,
       execDispatchTarget: execDispatchTarget || undefined,
       dispatchErrorMessage: execDispatchResolution.errorMessage,
@@ -8757,8 +9607,8 @@ ${raw}
     blocks.push({
       type: "tool_use",
       id: preparedTool.activeToolCall.id,
-      name: preparedTool.protocolToolName,
-      input: preparedTool.protocolToolInput,
+      name: preparedTool.historyToolName,
+      input: preparedTool.historyToolInput,
     })
   }
 
@@ -9135,9 +9985,42 @@ ${raw}
     return [
       `The current top-level agent turn has already completed ${readOnlyTurns} read-only investigative tool batches.`,
       "Prefer synthesizing from the evidence already gathered instead of repeating equivalent investigative tool calls.",
+      "If the task requires a report, artifact, or file edit, do that write now instead of saying that you will do it next.",
       "Only call another tool if it is materially necessary to reduce uncertainty or validate a concrete remaining hypothesis.",
       "Do not end the task early if meaningful work is still required; continue until you can complete the request or clearly explain the blocker.",
       recentProgress || "",
+    ]
+      .filter((line) => line.length > 0)
+      .join("\n\n")
+  }
+
+  private filterCloudCodeToolsForForcedSynthesis(
+    toolDefinitions: ToolDefinition[]
+  ): ToolDefinition[] {
+    return toolDefinitions.filter((tool) => {
+      const normalizedName = tool.name.trim().toLowerCase()
+      return !this.CLOUD_CODE_FORCED_SYNTHESIS_BLOCKED_TOOL_NAMES.has(
+        normalizedName
+      )
+    })
+  }
+
+  private buildForcedCloudCodeSynthesisPrompt(
+    toolDefinitions: ToolDefinition[]
+  ): string {
+    const visibleToolNames = Array.from(
+      new Set(toolDefinitions.map((tool) => tool.name.trim()).filter(Boolean))
+    )
+    const toolPreview =
+      visibleToolNames.length > 0
+        ? `${visibleToolNames.slice(0, 8).join(", ")}${visibleToolNames.length > 8 ? ", ..." : ""}`
+        : ""
+
+    return [
+      "Cloud Code synthesis mode is now active because the read-only investigation budget is exhausted.",
+      "Read-only investigative tools have been removed for this continuation. Do not continue browsing, grepping, listing directories, or reading files.",
+      "Synthesize from the evidence already gathered. If the task requires creating a report or artifact, create it now with an available write/edit tool instead of describing what you will do next.",
+      toolPreview ? `Remaining non-read-only tools: ${toolPreview}.` : "",
     ]
       .filter((line) => line.length > 0)
       .join("\n\n")
@@ -9214,7 +10097,9 @@ ${raw}
       preparedTool.protocolToolName,
       preparedTool.protocolToolInput,
       preparedTool.protocolToolFamilyHint,
-      activeToolCall.modelCallId
+      activeToolCall.modelCallId,
+      preparedTool.historyToolName,
+      preparedTool.historyToolInput
     )
 
     const stepId = this.sessionManager.incrementStepId(conversationId)
@@ -9225,6 +10110,10 @@ ${raw}
         preparedTool.protocolToolName,
         preparedTool.deferredToolFamily,
         preparedTool.canDispatchExec
+      ) &&
+      !this.shouldProjectOfficialArtifactAsCursorUi(
+        preparedTool.protocolToolName,
+        preparedTool.protocolToolInput
       )
     ) {
       yield this.grpcService.createToolCallStartedResponse(
@@ -9462,6 +10351,54 @@ ${raw}
       durationMs
     )
     yield stepCompleted
+  }
+
+  private *emitProjectedToolCompletedAndStep(
+    conversationId: string,
+    session: ChatSession,
+    pendingToolCall: PendingToolCall,
+    toolCallId: string,
+    projectedToolName: string,
+    projectedToolInput: Record<string, unknown>,
+    toolResultContent: string,
+    stepStartTime: number,
+    extraData?: ToolCompletedExtraData
+  ): Generator<Buffer> {
+    const shouldSuppressStartedFallback =
+      this.shouldSuppressTodoLifecycleStarted(projectedToolName)
+
+    if (!pendingToolCall.startedEmitted && !shouldSuppressStartedFallback) {
+      const startedFallback = this.grpcService.createToolCallStartedResponse(
+        toolCallId,
+        projectedToolName,
+        projectedToolInput,
+        undefined,
+        pendingToolCall.modelCallId
+      )
+      yield startedFallback
+      pendingToolCall.startedEmitted = true
+    } else if (shouldSuppressStartedFallback) {
+      pendingToolCall.startedEmitted = true
+    }
+
+    this.sessionManager.recordCompletedToolCall(conversationId, pendingToolCall)
+
+    const toolCompleted = this.grpcService.createToolCallCompletedResponse(
+      toolCallId,
+      projectedToolName,
+      projectedToolInput,
+      toolResultContent,
+      undefined,
+      pendingToolCall.modelCallId,
+      extraData
+    )
+    yield toolCompleted
+
+    const durationMs = Date.now() - stepStartTime
+    yield this.grpcService.createStepCompletedResponse(
+      session.stepId,
+      durationMs
+    )
   }
 
   private *emitShellToolDelta(
@@ -11119,24 +12056,50 @@ ${raw}
             this.logger.warn(
               `Edit apply warning for ${editPending.toolCallId}: ${computedEdit.warning}`
             )
+            if (computedEdit.fileText === editPending.beforeContent) {
+              this.logger.warn(
+                `Skipping writeArgs for edit tool ${editPending.toolCallId} because the computed edit produced no safe file changes`
+              )
+              // Fall through and complete the tool with the read_result plus warning.
+              // This avoids falsely reporting a successful write_result/no-op.
+            } else {
+              const writeExecId = this.sessionManager.nextExecId(conversationId)
+              const writeExecMsg = this.grpcService.createWriteExecMessage(
+                editPending.toolCallId,
+                String(typedInput.path || ""),
+                computedEdit.fileText,
+                writeExecId
+              )
+              this.sessionManager.registerPendingToolExecId(
+                conversationId,
+                editPending.toolCallId,
+                writeExecId
+              )
+              this.logger.log(
+                `Sending writeArgs for edit tool ${editPending.toolCallId} (串行协议第二步, execId=${writeExecId})`
+              )
+              yield writeExecMsg
+              return
+            }
+          } else {
+            const writeExecId = this.sessionManager.nextExecId(conversationId)
+            const writeExecMsg = this.grpcService.createWriteExecMessage(
+              editPending.toolCallId,
+              String(typedInput.path || ""),
+              computedEdit.fileText,
+              writeExecId
+            )
+            this.sessionManager.registerPendingToolExecId(
+              conversationId,
+              editPending.toolCallId,
+              writeExecId
+            )
+            this.logger.log(
+              `Sending writeArgs for edit tool ${editPending.toolCallId} (串行协议第二步, execId=${writeExecId})`
+            )
+            yield writeExecMsg
+            return
           }
-          const writeExecId = this.sessionManager.nextExecId(conversationId)
-          const writeExecMsg = this.grpcService.createWriteExecMessage(
-            editPending.toolCallId,
-            String(typedInput.path || ""),
-            computedEdit.fileText,
-            writeExecId
-          )
-          this.sessionManager.registerPendingToolExecId(
-            conversationId,
-            editPending.toolCallId,
-            writeExecId
-          )
-          this.logger.log(
-            `Sending writeArgs for edit tool ${editPending.toolCallId} (串行协议第二步, execId=${writeExecId})`
-          )
-          yield writeExecMsg
-          return
         }
       }
     }
@@ -11162,7 +12125,7 @@ ${raw}
       pendingToolCall.toolInput,
       rawToolResultContent
     )
-    const toolResultState = this.deriveToolResultState(toolResult)
+    let toolResultState = this.deriveToolResultState(toolResult)
     const parsedShellResult = this.extractShellResultPayload(toolResult)
     if (pendingToolCall.editApplyWarning) {
       toolResultContent =
@@ -11354,7 +12317,10 @@ ${raw}
         this.sessionManager.addReadPath(conversationId, filePath)
       }
     } else if (
+      pendingToolCall.toolName ===
+        "CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2" ||
       pendingToolCall.toolName === "run_terminal_command_v2" ||
+      pendingToolCall.toolName === "run_terminal_command" ||
       pendingToolCall.toolName === "shell" ||
       pendingToolCall.toolName === "run_command"
     ) {
@@ -11648,17 +12614,47 @@ ${raw}
       )
     }
 
+    const artifactUiProjection =
+      pendingToolCall.toolName === "edit_file_v2" ||
+      pendingToolCall.toolName === "edit"
+        ? this.buildCursorArtifactUiProjection(
+            conversationId,
+            pendingToolCall,
+            extraData?.afterContent || ""
+          )
+        : null
+
     // Send ToolCallCompleted + StepCompleted using unified lifecycle projection.
-    yield* this.emitToolCompletedAndStep(
-      conversationId,
-      session,
-      pendingToolCall,
-      toolCallId,
-      toolResultContent,
-      stepStartTime,
-      extraData,
-      toolInputForProjection
-    )
+    if (artifactUiProjection) {
+      yield* this.emitProjectedToolCompletedAndStep(
+        conversationId,
+        session,
+        pendingToolCall,
+        toolCallId,
+        artifactUiProjection.toolName,
+        artifactUiProjection.toolInput,
+        artifactUiProjection.content,
+        stepStartTime,
+        {
+          ...(extraData || {}),
+          toolResultState: artifactUiProjection.toolResultState,
+        }
+      )
+      toolResultContent = artifactUiProjection.content
+      toolResultState = artifactUiProjection.toolResultState
+      toolInputForProjection = artifactUiProjection.toolInput
+    } else {
+      yield* this.emitToolCompletedAndStep(
+        conversationId,
+        session,
+        pendingToolCall,
+        toolCallId,
+        toolResultContent,
+        stepStartTime,
+        extraData,
+        toolInputForProjection
+      )
+    }
 
     // CRITICAL: Immediately add tool_result to message history
     // NOTE: The assistant message with tool_use was already added in handleChatMessage
@@ -11669,9 +12665,13 @@ ${raw}
     // For inline web tools, keep history content compact and source-focused so
     // the conversation transcript better matches Cursor's native tool_result
     // shape instead of dumping the entire fetched body/search blob back inline.
+    const historyToolName =
+      pendingToolCall.historyToolName || pendingToolCall.toolName
+    const historyToolInput =
+      pendingToolCall.historyToolInput || pendingToolCall.toolInput
     const historyToolResultContent = this.formatToolResultForHistory(
-      pendingToolCall.toolName,
-      pendingToolCall.toolInput,
+      historyToolName,
+      historyToolInput,
       toolResultContent,
       toolResultState
     )
@@ -11682,8 +12682,8 @@ ${raw}
     this.appendToolResultWithIntegrity(
       session,
       toolCallId,
-      pendingToolCall.toolName,
-      pendingToolCall.toolInput,
+      historyToolName,
+      historyToolInput,
       historyToolResultContent
     )
 
@@ -11755,10 +12755,10 @@ ${raw}
       topLevelTurnState.llmTurnCount += 1
       const adviseSynthesis =
         this.shouldAdviseTopLevelReadOnlySynthesis(activeSession)
-      if (adviseSynthesis) {
-        this.logger.warn(
-          `Top-level agent turn exceeded read-only investigation budget (${topLevelTurnState.readOnlyBatchCount} batches); preferring synthesis while keeping tools available`
-        )
+      const forceCloudCodeSynthesis =
+        adviseSynthesis && this.isCloudCodeBackend(route.backend)
+      if (forceCloudCodeSynthesis) {
+        topLevelTurnState.forcedSynthesisAttempted = true
       }
       this.sessionManager.markSessionDirty(conversationId)
 
@@ -11769,9 +12769,29 @@ ${raw}
         )
       }
 
-      const continuationTools = buildToolsForApi(toolsForContinuation, {
+      const allContinuationTools = buildToolsForApi(toolsForContinuation, {
         mcpToolDefs: activeSession.mcpToolDefs,
       })
+      let continuationTools = allContinuationTools
+      let forcedSynthesisPrompt: string | undefined
+      if (forceCloudCodeSynthesis) {
+        const filteredContinuationTools =
+          this.filterCloudCodeToolsForForcedSynthesis(allContinuationTools)
+        if (filteredContinuationTools.length > 0) {
+          continuationTools = filteredContinuationTools
+        }
+        forcedSynthesisPrompt =
+          this.buildForcedCloudCodeSynthesisPrompt(continuationTools)
+        const removedToolCount =
+          allContinuationTools.length - continuationTools.length
+        this.logger.warn(
+          `Top-level agent turn exceeded read-only investigation budget (${topLevelTurnState.readOnlyBatchCount} batches); forcing Cloud Code synthesis with ${continuationTools.length}/${allContinuationTools.length} tool definitions active (${removedToolCount} investigative tools removed)`
+        )
+      } else if (adviseSynthesis) {
+        this.logger.warn(
+          `Top-level agent turn exceeded read-only investigation budget (${topLevelTurnState.readOnlyBatchCount} batches); preferring synthesis while keeping tools available`
+        )
+      }
 
       const normalizedContinuationHistory = this.normalizeHistoryForBackend(
         activeSession.messages as Array<{
@@ -11796,7 +12816,7 @@ ${raw}
         ? this.buildReadOnlySynthesisAdvisoryPrompt(activeSession)
         : undefined
       const additionalSystemPrompt =
-        [summaryMemoryPrompt, synthesisAdvisoryPrompt]
+        [summaryMemoryPrompt, synthesisAdvisoryPrompt, forcedSynthesisPrompt]
           .filter((prompt): prompt is string => typeof prompt === "string")
           .join("\n\n") || undefined
 
@@ -12997,92 +14017,6 @@ ${raw}
     return parts.join("\n\n")
   }
 
-  private normalizeMessageContentToText(content: MessageContent): string {
-    if (typeof content === "string") return content
-    if (!Array.isArray(content)) return ""
-    return content
-      .map((item) => {
-        if (typeof item === "string") return item
-        if (!item || typeof item !== "object") return ""
-        const record = item as Record<string, unknown>
-        if (typeof record.text === "string") return record.text
-        if (typeof record.thinking === "string") return record.thinking
-        return ""
-      })
-      .filter((text) => text.trim().length > 0)
-      .join("\n")
-  }
-
-  private buildGoogleOfficialMessages(
-    contextMessages: Array<{
-      role: "user" | "assistant"
-      content: MessageContent
-    }>,
-    historyMessages: CreateMessageDto["messages"]
-  ): CreateMessageDto["messages"] {
-    const passthroughHistory: CreateMessageDto["messages"] = []
-    const latestUserTexts: string[] = []
-
-    for (const message of historyMessages || []) {
-      if (!message || typeof message !== "object") continue
-      if (message.role === "user") {
-        const text = this.normalizeMessageContentToText(
-          message.content as MessageContent
-        )
-        if (text.trim()) latestUserTexts.push(text.trim())
-      } else {
-        passthroughHistory.push(message)
-      }
-    }
-
-    const findContextText = (tag: string): string => {
-      const openTag = `<${tag}>`
-      return (
-        contextMessages
-          .map((message) => this.normalizeMessageContentToText(message.content))
-          .find((text) => text.includes(openTag)) || ""
-      )
-    }
-
-    const userInformation = findContextText("user_information")
-    const userRules = findContextText("user_rules")
-    const artifacts = findContextText("artifacts")
-    const mcpServers = findContextText("mcp_servers")
-    const workflows = findContextText("workflows")
-    const metadata = findContextText("ADDITIONAL_METADATA").replace(
-      /^Step Id:\s*\d+\s*/,
-      ""
-    )
-    const ephemeral = findContextText("EPHEMERAL_MESSAGE").replace(
-      /^Step Id:\s*\d+\s*/,
-      ""
-    )
-    const userRequest = latestUserTexts[latestUserTexts.length - 1] || ""
-
-    const first = [userInformation, artifacts, mcpServers]
-      .filter((part) => part.trim().length > 0)
-      .join("\n")
-    const second = [userRules, workflows]
-      .filter((part) => part.trim().length > 0)
-      .join("\n")
-    const thirdParts: string[] = []
-    if (userRequest) {
-      thirdParts.push(`<USER_REQUEST>\n${userRequest}\n</USER_REQUEST>`)
-    }
-    if (metadata) thirdParts.push(metadata.trim())
-    if (ephemeral) thirdParts.push(ephemeral.trim())
-
-    const officialMessages: CreateMessageDto["messages"] = []
-    if (first.trim()) officialMessages.push({ role: "user", content: first })
-    if (second.trim()) officialMessages.push({ role: "user", content: second })
-    if (passthroughHistory.length > 0)
-      officialMessages.push(...passthroughHistory)
-    const third = thirdParts.join("\n")
-    if (third.trim()) officialMessages.push({ role: "user", content: third })
-
-    return officialMessages
-  }
-
   private buildGoogleContextMessages(
     context: PromptContext,
     conversationId: string
@@ -13238,8 +14172,8 @@ ${raw}
         "<no_active_task_reminder>",
         "You are currently not in a task because: a task boundary has never been set yet in this conversation.",
         "If there is no obvious task from the user or if you are just conversing, then it is acceptable to not have a task set. If you are just handling simple one-off requests, such as explaining a single file, or making one or two ad-hoc code edit requests, or making an obvious refactoring request such as renaming or moving code into a helper function, it is also acceptable to not have a task set.",
-        "Otherwise, you should use the task_boundary tool to set a task if there is one evident.",
-        "Since you are NOT in an active task section, DO NOT call the `notify_user` tool unless you are requesting review of files.",
+        "If there is an obvious task from the user, proceed directly on that task without spending turns on task-boundary bookkeeping.",
+        "Only rely on tools that are actually present in this request; do not mention or depend on absent meta-tools.",
         "</no_active_task_reminder>",
         "</EPHEMERAL_MESSAGE>",
       ]

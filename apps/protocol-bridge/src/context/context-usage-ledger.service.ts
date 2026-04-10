@@ -97,6 +97,15 @@ export class ContextUsageLedgerService {
       return rawEstimate
     }
 
+    const lastAppliedCompaction = state.lastAppliedCompaction
+    if (
+      currentCompactionId &&
+      lastAppliedCompaction &&
+      lastAppliedCompaction.compactionId !== currentCompactionId
+    ) {
+      return rawEstimate
+    }
+
     const currentAttachmentFingerprint =
       this.buildProjectedAttachmentFingerprint(projected)
     if (

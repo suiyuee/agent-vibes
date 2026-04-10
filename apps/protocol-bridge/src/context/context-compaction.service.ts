@@ -1,5 +1,5 @@
 import { Injectable } from "@nestjs/common"
-import { randomUUID } from "crypto"
+import { createHash, randomUUID } from "crypto"
 import {
   ContextCompactionCommit,
   ContextConversationState,
@@ -21,11 +21,20 @@ import { ContextUsageLedgerService } from "./context-usage-ledger.service"
 import { TokenCounterService } from "./token-counter.service"
 import { ToolIntegrityService } from "./tool-integrity.service"
 
+export interface ContextCompactionPlan {
+  commit: ContextCompactionCommit
+  projectedMessages: ProjectedContextMessage[]
+  estimatedTokens: number
+  attachmentFingerprint: string
+  recordCount: number
+}
+
 export interface ContextCompactionResult {
   messages: UnifiedMessage[]
   projectedMessages: ProjectedContextMessage[]
   estimatedTokens: number
   wasCompacted: boolean
+  appliedCompaction?: ContextCompactionPlan
   toolResultCompaction?: ToolResultCompactionResult
 }
 
@@ -65,17 +74,18 @@ export class ContextCompactionService {
     )
     const attachmentTokenBudget =
       this.resolveAttachmentBudget(effectiveMaxTokens)
-
-    let projected = this.projection.project(
-      state,
-      this.buildProjectionOptions(snapshot, attachmentTokenBudget)
+    const projectionOptions = this.buildProjectionOptions(
+      snapshot,
+      attachmentTokenBudget
     )
+
+    let projected = this.projection.project(state, projectionOptions)
     let estimated = this.usageLedger.estimateProjectedTokens(
       state,
       projected,
-      this.buildProjectionOptions(snapshot, attachmentTokenBudget)
+      projectionOptions
     )
-    let wasCompacted = false
+    let appliedCompaction: ContextCompactionPlan | undefined
 
     for (
       let iteration = 0;
@@ -83,7 +93,7 @@ export class ContextCompactionService {
       estimated > effectiveMaxTokens;
       iteration++
     ) {
-      const nextCommit = this.buildCompactionCommit(
+      const nextPlan = this.planCompaction(
         state,
         projected,
         snapshot,
@@ -92,21 +102,17 @@ export class ContextCompactionService {
         options.strategy || "auto",
         options.integrityMode
       )
-      if (!nextCommit) break
+      if (!nextPlan) break
 
-      state.compactionHistory.push(nextCommit)
-      state.activeCompactionId = nextCommit.id
-      wasCompacted = true
+      if (!this.canApplyCompactionPlan(state, nextPlan)) {
+        break
+      }
 
-      projected = this.projection.project(
-        state,
-        this.buildProjectionOptions(snapshot, attachmentTokenBudget)
-      )
-      estimated = this.usageLedger.estimateProjectedTokens(
-        state,
-        projected,
-        this.buildProjectionOptions(snapshot, attachmentTokenBudget)
-      )
+      this.applyCompactionPlan(state, nextPlan)
+      appliedCompaction = nextPlan
+
+      projected = nextPlan.projectedMessages
+      estimated = nextPlan.estimatedTokens
     }
 
     const reactiveCompaction =
@@ -137,15 +143,16 @@ export class ContextCompactionService {
         this.usageLedger.estimateProjectedTokens(
           state,
           projected,
-          this.buildProjectionOptions(snapshot, attachmentTokenBudget)
+          projectionOptions
         )
       ),
-      wasCompacted,
+      wasCompacted: !!appliedCompaction,
+      appliedCompaction,
       toolResultCompaction: reactiveCompaction?.result,
     }
   }
 
-  private buildCompactionCommit(
+  private planCompaction(
     state: ContextConversationState,
     projected: ProjectedContextMessage[],
     snapshot: ContextAttachmentSnapshot,
@@ -153,7 +160,7 @@ export class ContextCompactionService {
     attachmentTokenBudget: number,
     strategy: ContextCompactionCommit["strategy"],
     integrityMode?: "strict-adjacent" | "global"
-  ): ContextCompactionCommit | null {
+  ): ContextCompactionPlan | null {
     const commitId = randomUUID()
     const summaryBudgetCap = this.resolveSummaryBudgetCap(effectiveMaxTokens)
     const currentActive = this.projection.getActiveCommit(state)
@@ -212,9 +219,7 @@ export class ContextCompactionService {
       return null
     }
 
-    const suffix = candidateRecords
-      .slice(truncationIndex)
-      .map((record) => ({
+    const suffix = candidateRecords.slice(truncationIndex).map((record) => ({
       role: record.role,
       content: record.content,
     })) as UnifiedMessage[]
@@ -237,13 +242,25 @@ export class ContextCompactionService {
     const projectionAnchorRecordId = [...projected]
       .reverse()
       .find((message) => !!message.recordId)?.recordId
+    const attachmentFingerprint = createHash("sha256")
+      .update(
+        liveAttachments
+          .map((attachment) => `${attachment.kind}:${attachment.content}`)
+          .join("\n---\n")
+      )
+      .digest("hex")
+    const nextEpoch = (state.compactionEpoch || 0) + 1
     const commitBase: ContextCompactionCommit = {
       id: commitId,
       strategy,
       createdAt: Date.now(),
+      epoch: nextEpoch,
+      parentCompactionId: currentActive?.id,
       archivedThroughRecordId,
       projectionAnchorRecordId,
       archivedMessageCount: archivedRecords.length,
+      sourceRecordCount: archivedRecords.length,
+      attachmentFingerprint,
       sourceTokenCount: this.tokenCounter.countMessages(
         archivedRecords.map((record) => ({
           role: record.role,
@@ -261,20 +278,74 @@ export class ContextCompactionService {
       activeCompactionId: commitBase.id,
       usageLedger: state.usageLedger,
       records: state.records,
+      compactionEpoch: nextEpoch,
+      lastAppliedCompaction: {
+        recordCount: state.records.length,
+        attachmentFingerprint,
+        appliedAt: commitBase.createdAt,
+        compactionId: commitBase.id,
+        epoch: nextEpoch,
+      },
     }
+    const projectedMessages = this.projection.project(
+      simulatedState,
+      this.buildProjectionOptions(snapshot, attachmentTokenBudget)
+    )
     commitBase.projectedTokenCount = this.tokenCounter.countMessages(
-      this.projection
-        .project(
-          simulatedState,
-          this.buildProjectionOptions(snapshot, attachmentTokenBudget)
-        )
-        .map((message) => ({
-          role: message.role,
-          content: message.content,
-        })) as UnifiedMessage[]
+      projectedMessages.map((message) => ({
+        role: message.role,
+        content: message.content,
+      })) as UnifiedMessage[]
     )
 
-    return commitBase
+    return {
+      commit: commitBase,
+      projectedMessages,
+      estimatedTokens: this.usageLedger.estimateProjectedTokens(
+        simulatedState,
+        projectedMessages,
+        this.buildProjectionOptions(snapshot, attachmentTokenBudget)
+      ),
+      attachmentFingerprint,
+      recordCount: state.records.length,
+    }
+  }
+
+  private canApplyCompactionPlan(
+    state: ContextConversationState,
+    plan: ContextCompactionPlan
+  ): boolean {
+    const basis = state.lastAppliedCompaction
+    if (!basis) {
+      return true
+    }
+
+    if (basis.compactionId === plan.commit.id) {
+      return false
+    }
+
+    return !(
+      basis.recordCount === plan.recordCount &&
+      basis.attachmentFingerprint === plan.attachmentFingerprint &&
+      basis.compactionId === state.activeCompactionId
+    )
+  }
+
+  private applyCompactionPlan(
+    state: ContextConversationState,
+    plan: ContextCompactionPlan
+  ): void {
+    state.compactionHistory.push(plan.commit)
+    state.activeCompactionId = plan.commit.id
+    const nextEpoch = (state.compactionEpoch || 0) + 1
+    state.compactionEpoch = nextEpoch
+    state.lastAppliedCompaction = {
+      recordCount: plan.recordCount,
+      attachmentFingerprint: plan.attachmentFingerprint,
+      appliedAt: Date.now(),
+      compactionId: plan.commit.id,
+      epoch: plan.commit.epoch ?? nextEpoch,
+    }
   }
 
   private resolveAttachmentBudget(effectiveMaxTokens: number): number {
@@ -311,10 +382,17 @@ export class ContextCompactionService {
     return this.tokenCounter.countMessages([
       {
         role: "user",
-        content:
-          `[Context boundary ${commitId}]\n` +
-          `Earlier conversation history was compacted into a structured summary. ` +
-          `Continue from the retained messages below without explicitly acknowledging this boundary.`,
+        content: this.projection.renderCompactionBoundary({
+          id: commitId,
+          strategy: "auto",
+          createdAt: Date.now(),
+          archivedThroughRecordId: commitId,
+          archivedMessageCount: 0,
+          sourceTokenCount: 0,
+          summary: "",
+          summaryTokenCount: 0,
+          projectedTokenCount: 0,
+        }),
       },
     ])
   }
@@ -323,9 +401,22 @@ export class ContextCompactionService {
     return this.tokenCounter.countMessages([
       {
         role: "user",
-        content:
-          `[Context summary ${commitId}]\n\n` +
-          `Do not answer this summary directly. Use it only as compressed working context.`,
+        content: this.projection
+          .renderCompactionSummary({
+            id: commitId,
+            strategy: "auto",
+            createdAt: Date.now(),
+            archivedThroughRecordId: commitId,
+            archivedMessageCount: 0,
+            sourceTokenCount: 0,
+            summary: "",
+            summaryTokenCount: 0,
+            projectedTokenCount: 0,
+          })
+          .replace(
+            /^\[Context summary [^\]]+\]\n/,
+            `[Context summary ${commitId}]\n`
+          ),
       },
     ])
   }
@@ -366,10 +457,14 @@ export class ContextCompactionService {
     )
     const recordBudget = Math.max(0, effectiveMaxTokens - prefixTokens)
 
-    const result = this.toolResultCompaction.compactRecords(retainedRecords, {
-      trigger: "reactive",
-      targetTokens: recordBudget,
-    }, state.toolResultReplacementState)
+    const result = this.toolResultCompaction.compactRecords(
+      retainedRecords,
+      {
+        trigger: "reactive",
+        targetTokens: recordBudget,
+      },
+      state.toolResultReplacementState
+    )
     if (!result.changed) {
       return {
         changed: false,
@@ -414,10 +509,7 @@ export class ContextCompactionService {
     if (archivedIndex < 0) {
       return [...retainedRecords]
     }
-    return [
-      ...sourceRecords.slice(0, archivedIndex + 1),
-      ...retainedRecords,
-    ]
+    return [...sourceRecords.slice(0, archivedIndex + 1), ...retainedRecords]
   }
 
   private hardFitProjection(
