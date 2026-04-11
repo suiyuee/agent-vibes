@@ -125,6 +125,7 @@ export class ContextManagerService {
         seenToolUseIds: [],
         replacementByToolUseId: {},
       },
+      investigationMemory: [],
     }
   }
 }

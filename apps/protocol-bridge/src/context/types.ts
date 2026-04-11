@@ -33,6 +33,7 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: string | ContentBlock[]
   is_error?: boolean
+  structuredContent?: Record<string, unknown>
 }
 
 /**
@@ -129,7 +130,12 @@ export interface ContextTranscriptRecord {
 }
 
 export interface ContextProjectionAttachment {
-  kind: "sub_agent" | "read_paths" | "file_states" | "todos"
+  kind:
+    | "sub_agent"
+    | "read_paths"
+    | "file_states"
+    | "todos"
+    | "investigation_memory"
   label: string
   content: string
   tokenCount: number
@@ -173,6 +179,24 @@ export interface ContextToolResultReplacementState {
   replacementByToolUseId: Record<string, string>
 }
 
+export interface ContextInvestigationMemoryEntry {
+  batchId: string
+  label: string
+  details: string
+  toolCallIds: string[]
+  toolCount: number
+  readOnly: boolean
+  createdAt: number
+}
+
+export interface InvestigationMemorySummaryLike {
+  label: string
+  details: string
+  toolCount?: number
+  readOnly?: boolean
+  createdAt?: number
+}
+
 export interface ContextConversationState {
   records: ContextTranscriptRecord[]
   compactionHistory: ContextCompactionCommit[]
@@ -181,6 +205,7 @@ export interface ContextConversationState {
   lastAppliedCompaction?: ContextCompactionBasis
   usageLedger: ContextUsageLedgerState
   toolResultReplacementState?: ContextToolResultReplacementState
+  investigationMemory: ContextInvestigationMemoryEntry[]
 }
 
 export interface ProjectedContextMessage {

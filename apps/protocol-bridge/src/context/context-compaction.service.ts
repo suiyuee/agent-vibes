@@ -45,6 +45,7 @@ export class ContextCompactionService {
   private readonly MIN_ATTACHMENT_TOKENS = 128
   private readonly SUMMARY_TOKEN_BUDGET = 2400
   private readonly ATTACHMENT_TOKEN_BUDGET = 2200
+  private readonly INVESTIGATION_MEMORY_ATTACHMENT_BONUS = 320
   private readonly MAX_COMPACTION_ITERATIONS = 3
 
   constructor(
@@ -72,8 +73,12 @@ export class ContextCompactionService {
       options.maxTokens - options.systemPromptTokens,
       this.MIN_REQUEST_BUDGET
     )
-    const attachmentTokenBudget =
-      this.resolveAttachmentBudget(effectiveMaxTokens)
+    const hasInvestigationMemory =
+      (snapshot.investigationSummaries?.length ?? 0) > 0
+    const attachmentTokenBudget = this.resolveAttachmentBudget(
+      effectiveMaxTokens,
+      hasInvestigationMemory
+    )
     const projectionOptions = this.buildProjectionOptions(
       snapshot,
       attachmentTokenBudget
@@ -346,15 +351,60 @@ export class ContextCompactionService {
       compactionId: plan.commit.id,
       epoch: plan.commit.epoch ?? nextEpoch,
     }
+    // Prune investigation memory entries whose evidence was fully archived
+    // by this compaction commit so stale references don't accumulate.
+    this.pruneArchivedInvestigationMemory(
+      state,
+      plan.commit.archivedThroughRecordId
+    )
   }
 
-  private resolveAttachmentBudget(effectiveMaxTokens: number): number {
-    return Math.min(
+  private pruneArchivedInvestigationMemory(
+    state: ContextConversationState,
+    archivedThroughRecordId: string
+  ): void {
+    if (state.investigationMemory.length === 0) return
+    const archivedRecord = state.records.find(
+      (record) => record.id === archivedThroughRecordId
+    )
+    if (!archivedRecord) return
+    const cutoff = archivedRecord.createdAt
+    state.investigationMemory = state.investigationMemory.filter(
+      // Use strict > because entries created at the same millisecond as
+      // the archived record boundary are fully covered by this compaction
+      // commit's summary and should be pruned to avoid accumulation.
+      (entry) => entry.createdAt > cutoff
+    )
+  }
+
+  private resolveAttachmentBudget(
+    effectiveMaxTokens: number,
+    hasInvestigationMemory: boolean
+  ): number {
+    const baseBudget = Math.min(
       this.ATTACHMENT_TOKEN_BUDGET,
       Math.max(
         this.MIN_ATTACHMENT_TOKENS,
         Math.floor(effectiveMaxTokens * 0.18)
       )
+    )
+
+    if (!hasInvestigationMemory) {
+      return baseBudget
+    }
+
+    // Cap the bonus proportionally so it doesn't overwhelm small context
+    // windows (e.g. 8k).  At 0.03 * effectiveMaxTokens the bonus scales
+    // with the available budget, maxing out at the configured cap.
+    const proportionalBonus = Math.min(
+      this.INVESTIGATION_MEMORY_ATTACHMENT_BONUS,
+      Math.floor(effectiveMaxTokens * 0.03)
+    )
+    // Allow the bonus to exceed the normal attachment cap so investigation
+    // memory actually gets extra room in large-context windows.
+    return Math.min(
+      this.ATTACHMENT_TOKEN_BUDGET + proportionalBonus,
+      baseBudget + proportionalBonus
     )
   }
 

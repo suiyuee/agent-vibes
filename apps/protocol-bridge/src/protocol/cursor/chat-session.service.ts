@@ -8,11 +8,14 @@ import * as path from "path"
 import { enforceToolProtocol } from "../../context/message-integrity-guard"
 import type {
   ContextConversationState,
+  ContextInvestigationMemoryEntry,
   ContextTranscriptRecord,
   ContextUsageLedgerState,
   ContextUsageSnapshot,
+  InvestigationMemorySummaryLike,
   LooseMessageContent,
 } from "../../context/types"
+import type { EditFailureSelection } from "./tool-protocol-helpers"
 import type { BackendType } from "../../llm/model-router.service"
 import { PersistenceService } from "../../persistence"
 import { ParsedCursorRequest } from "./cursor-request-parser"
@@ -86,16 +89,6 @@ export interface SessionRestartRecovery {
   }
 }
 
-export interface SessionCompletedToolBatchSummary {
-  batchId: string
-  label: string
-  details: string
-  toolCallIds: string[]
-  toolCount: number
-  readOnly: boolean
-  createdAt: number
-}
-
 export interface SessionActiveToolBatch {
   batchId: string
   toolCallIds: string[]
@@ -116,7 +109,6 @@ export interface SessionTopLevelAgentTurnState {
   hasMutatingToolCall: boolean
   forcedSynthesisAttempted: boolean
   activeToolBatch?: SessionActiveToolBatch
-  completedBatchSummaries: SessionCompletedToolBatchSummary[]
 }
 
 export type SessionBackgroundCommandStatus =
@@ -143,6 +135,29 @@ export interface SessionBackgroundCommand {
   startedAt: number
   updatedAt: number
   completedAt?: number
+}
+
+export interface SessionReadSnapshot {
+  filePath: string
+  startLine?: number
+  endLine?: number
+  content: string
+  capturedAt: number
+  sourceToolName: string
+}
+
+export interface EditFailureContext extends EditFailureSelection {
+  filePath: string
+  reason:
+    | "missing_content"
+    | "empty_target"
+    | "range_invalid"
+    | "target_not_found"
+    | "ambiguous_target"
+    | "unsafe_overwrite"
+    | "missing_search_replace"
+    | "empty_search"
+    | "invalid_chunk"
 }
 
 /**
@@ -194,6 +209,7 @@ export interface ChatSession {
   // Checkpoint tracking for multi-turn conversations
   usedTokens: number
   readPaths: Set<string>
+  readSnapshots: SessionReadSnapshot[]
   fileStates: Map<string, { beforeContent: string; afterContent: string }>
   toolMetrics: SessionToolMetrics
 
@@ -255,6 +271,7 @@ export interface PendingToolCall {
   sentAt: Date
   execIds: Set<number>
   editApplyWarning?: string
+  editFailureContext?: EditFailureContext
   beforeContent?: string // File content before edit (for edit tools)
   // Which BiDi stream this tool call was dispatched on
   streamId: string
@@ -394,6 +411,7 @@ interface PersistedPendingToolCall {
   sentAt: number
   execIds: number[]
   editApplyWarning?: string
+  editFailureContext?: EditFailureContext
   beforeContent?: string
   shellStreamOutput?: {
     stdout: string[]
@@ -462,16 +480,6 @@ interface PersistedSessionRestartRecovery {
   }
 }
 
-interface PersistedCompletedToolBatchSummary {
-  batchId: string
-  label: string
-  details: string
-  toolCallIds: string[]
-  toolCount: number
-  readOnly: boolean
-  createdAt: number
-}
-
 interface PersistedActiveToolBatch {
   batchId: string
   toolCallIds: string[]
@@ -492,7 +500,6 @@ interface PersistedTopLevelAgentTurnState {
   hasMutatingToolCall: boolean
   forcedSynthesisAttempted: boolean
   activeToolBatch?: PersistedActiveToolBatch
-  completedBatchSummaries: PersistedCompletedToolBatchSummary[]
 }
 
 interface PersistedChatSessionV1 {
@@ -531,6 +538,7 @@ interface PersistedChatSessionV1 {
   requestedModelParameters?: Record<string, string>
   usedTokens: number
   readPaths: string[]
+  readSnapshots?: SessionReadSnapshot[]
   fileStates: Array<{
     path: string
     beforeContent: string
@@ -557,6 +565,9 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
   private readonly PERSISTED_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000
   private readonly PERSIST_FLUSH_INTERVAL_MS = 15 * 1000
   private readonly PERSIST_DEBOUNCE_MS = 250
+  private readonly MAX_READ_SNAPSHOTS_PER_SESSION = 24
+  private readonly MAX_READ_SNAPSHOTS_PER_FILE = 6
+  private readonly MAX_READ_SNAPSHOT_CHARS = 80_000
   private readonly scheduledPersistTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -759,7 +770,6 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       readOnlyBatchCount: 0,
       hasMutatingToolCall: false,
       forcedSynthesisAttempted: false,
-      completedBatchSummaries: [],
     }
   }
 
@@ -1003,18 +1013,6 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
               ),
             }
           : undefined,
-        completedBatchSummaries:
-          session.topLevelAgentTurnState.completedBatchSummaries.map(
-            (summary) => ({
-              batchId: summary.batchId,
-              label: summary.label,
-              details: summary.details,
-              toolCallIds: [...summary.toolCallIds],
-              toolCount: summary.toolCount,
-              readOnly: summary.readOnly,
-              createdAt: summary.createdAt,
-            })
-          ),
       },
       lastEmittedContextSummaryCompactionId:
         session.lastEmittedContextSummaryCompactionId,
@@ -1045,6 +1043,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
           sentAt: this.toTimestamp(toolCall.sentAt),
           execIds: Array.from(toolCall.execIds),
           editApplyWarning: toolCall.editApplyWarning,
+          editFailureContext: toolCall.editFailureContext,
           beforeContent: toolCall.beforeContent,
           shellStreamOutput: toolCall.shellStreamOutput
             ? {
@@ -1090,6 +1089,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       requestedModelParameters: session.requestedModelParameters,
       usedTokens: session.usedTokens,
       readPaths: Array.from(session.readPaths),
+      readSnapshots: session.readSnapshots.map((snapshot) => ({ ...snapshot })),
       fileStates: Array.from(session.fileStates.entries()).map(
         ([filePath, state]) => ({
           path: filePath,
@@ -1265,6 +1265,40 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
         seenToolUseIds: [],
         replacementByToolUseId: {},
       },
+      investigationMemory: [],
+    }
+  }
+
+  private normalizeInvestigationMemoryEntry(
+    value: unknown
+  ): ContextInvestigationMemoryEntry {
+    const entry =
+      value && typeof value === "object"
+        ? (value as Partial<ContextInvestigationMemoryEntry>)
+        : {}
+
+    return {
+      batchId:
+        typeof entry.batchId === "string" && entry.batchId.trim().length > 0
+          ? entry.batchId.trim()
+          : `recovered_${crypto.randomUUID()}`,
+      label: typeof entry.label === "string" ? entry.label : "",
+      details: typeof entry.details === "string" ? entry.details : "",
+      toolCallIds: Array.isArray(entry.toolCallIds)
+        ? entry.toolCallIds.filter(
+            (toolCallId): toolCallId is string =>
+              typeof toolCallId === "string" && toolCallId.trim().length > 0
+          )
+        : [],
+      toolCount:
+        typeof entry.toolCount === "number" && Number.isFinite(entry.toolCount)
+          ? Math.max(0, Math.floor(entry.toolCount))
+          : 0,
+      readOnly: entry.readOnly === true,
+      createdAt:
+        typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt)
+          ? entry.createdAt
+          : Date.now(),
     }
   }
 
@@ -1502,6 +1536,13 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
                     seenToolUseIds: [],
                     replacementByToolUseId: {},
                   },
+            investigationMemory: Array.isArray(
+              rawContextState.investigationMemory
+            )
+              ? rawContextState.investigationMemory.map((entry) =>
+                  this.normalizeInvestigationMemoryEntry(entry)
+                )
+              : [],
           }
         : this.createContextState(messageRecords)
 
@@ -1567,29 +1608,6 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
                   : [],
               }
             : undefined,
-          completedBatchSummaries: Array.isArray(
-            persisted.topLevelAgentTurnState.completedBatchSummaries
-          )
-            ? persisted.topLevelAgentTurnState.completedBatchSummaries.map(
-                (summary) => ({
-                  batchId: summary.batchId,
-                  label: summary.label,
-                  details: summary.details,
-                  toolCallIds: Array.isArray(summary.toolCallIds)
-                    ? [...summary.toolCallIds]
-                    : [],
-                  toolCount:
-                    typeof summary.toolCount === "number"
-                      ? summary.toolCount
-                      : 0,
-                  readOnly: summary.readOnly === true,
-                  createdAt:
-                    typeof summary.createdAt === "number"
-                      ? summary.createdAt
-                      : Date.now(),
-                })
-              )
-            : [],
         }
       : this.createEmptyTopLevelAgentTurnState()
 
@@ -1726,6 +1744,37 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       readPaths: new Set(
         Array.isArray(persisted.readPaths) ? persisted.readPaths : []
       ),
+      readSnapshots: Array.isArray(persisted.readSnapshots)
+        ? persisted.readSnapshots
+            .filter(
+              (snapshot): snapshot is SessionReadSnapshot =>
+                !!snapshot &&
+                typeof snapshot.filePath === "string" &&
+                snapshot.filePath.trim().length > 0 &&
+                typeof snapshot.content === "string" &&
+                snapshot.content.length > 0 &&
+                typeof snapshot.capturedAt === "number" &&
+                Number.isFinite(snapshot.capturedAt) &&
+                typeof snapshot.sourceToolName === "string" &&
+                snapshot.sourceToolName.trim().length > 0
+            )
+            .map((snapshot) => ({
+              filePath: snapshot.filePath,
+              startLine:
+                typeof snapshot.startLine === "number" &&
+                Number.isFinite(snapshot.startLine)
+                  ? Math.max(1, Math.floor(snapshot.startLine))
+                  : undefined,
+              endLine:
+                typeof snapshot.endLine === "number" &&
+                Number.isFinite(snapshot.endLine)
+                  ? Math.max(1, Math.floor(snapshot.endLine))
+                  : undefined,
+              content: snapshot.content,
+              capturedAt: Math.max(0, Math.floor(snapshot.capturedAt)),
+              sourceToolName: snapshot.sourceToolName,
+            }))
+        : [],
       fileStates: new Map(
         Array.isArray(persisted.fileStates)
           ? persisted.fileStates.map((state) => [
@@ -1818,6 +1867,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       requestedModelParameters: initialRequest?.requestedModelParameters,
       usedTokens: initialRequest?.usedContextTokens || 0,
       readPaths: new Set(),
+      readSnapshots: [],
       fileStates: new Map(),
       toolMetrics: this.createEmptyToolMetrics(),
       messageBlobIds: [],
@@ -2035,6 +2085,161 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       session.readPaths.add(filePath)
       this.schedulePersist(conversationId)
     }
+  }
+
+  addReadSnapshot(
+    conversationId: string,
+    snapshot: Omit<SessionReadSnapshot, "capturedAt">
+  ): boolean {
+    const session = this.getSession(conversationId)
+    if (!session) return false
+
+    const filePath =
+      typeof snapshot.filePath === "string" ? snapshot.filePath.trim() : ""
+    if (!filePath || typeof snapshot.content !== "string") {
+      return false
+    }
+    if (
+      snapshot.content.length === 0 ||
+      snapshot.content.length > this.MAX_READ_SNAPSHOT_CHARS
+    ) {
+      return false
+    }
+
+    const nextSnapshot: SessionReadSnapshot = {
+      filePath,
+      startLine:
+        typeof snapshot.startLine === "number" &&
+        Number.isFinite(snapshot.startLine)
+          ? Math.max(1, Math.floor(snapshot.startLine))
+          : undefined,
+      endLine:
+        typeof snapshot.endLine === "number" &&
+        Number.isFinite(snapshot.endLine)
+          ? Math.max(1, Math.floor(snapshot.endLine))
+          : undefined,
+      content: snapshot.content,
+      capturedAt: Date.now(),
+      sourceToolName:
+        typeof snapshot.sourceToolName === "string" &&
+        snapshot.sourceToolName.trim().length > 0
+          ? snapshot.sourceToolName.trim()
+          : "read_file",
+    }
+
+    const withoutSameWindow = session.readSnapshots.filter((existing) => {
+      return !(
+        existing.filePath === nextSnapshot.filePath &&
+        existing.startLine === nextSnapshot.startLine &&
+        existing.endLine === nextSnapshot.endLine &&
+        existing.sourceToolName === nextSnapshot.sourceToolName
+      )
+    })
+
+    const sameFileSnapshots = withoutSameWindow.filter(
+      (existing) => existing.filePath === nextSnapshot.filePath
+    )
+    const overflowForFile = Math.max(
+      0,
+      sameFileSnapshots.length - (this.MAX_READ_SNAPSHOTS_PER_FILE - 1)
+    )
+
+    let trimmedSnapshots = withoutSameWindow
+    if (overflowForFile > 0) {
+      // Evict narrow-range snapshots before full-file snapshots since
+      // full-file snapshots have broader coverage and are more useful
+      // for edit failure diagnostics.
+      const isFullFile = (s: SessionReadSnapshot): boolean =>
+        s.startLine == null && s.endLine == null
+      let removed = 0
+      trimmedSnapshots = withoutSameWindow.filter((existing) => {
+        if (
+          removed < overflowForFile &&
+          existing.filePath === nextSnapshot.filePath &&
+          !isFullFile(existing)
+        ) {
+          removed += 1
+          return false
+        }
+        return true
+      })
+      // If we still need to evict more (only full-file snapshots left), FIFO
+      if (removed < overflowForFile) {
+        let remaining = overflowForFile - removed
+        trimmedSnapshots = trimmedSnapshots.filter((existing) => {
+          if (remaining > 0 && existing.filePath === nextSnapshot.filePath) {
+            remaining -= 1
+            return false
+          }
+          return true
+        })
+      }
+    }
+
+    trimmedSnapshots.push(nextSnapshot)
+    if (trimmedSnapshots.length > this.MAX_READ_SNAPSHOTS_PER_SESSION) {
+      trimmedSnapshots = trimmedSnapshots.slice(
+        trimmedSnapshots.length - this.MAX_READ_SNAPSHOTS_PER_SESSION
+      )
+    }
+
+    session.lastActivityAt = new Date()
+    session.readSnapshots = trimmedSnapshots
+    this.schedulePersist(conversationId)
+    return true
+  }
+
+  getLatestReadSnapshot(
+    conversationId: string,
+    filePath: string,
+    options?: {
+      startLine?: number
+      endLine?: number
+      requireCoverage?: boolean
+    }
+  ): SessionReadSnapshot | undefined {
+    const session = this.getSession(conversationId)
+    if (!session) return undefined
+
+    const normalizedPath = typeof filePath === "string" ? filePath.trim() : ""
+    if (!normalizedPath) return undefined
+
+    const requestedStart =
+      typeof options?.startLine === "number" &&
+      Number.isFinite(options.startLine)
+        ? Math.max(1, Math.floor(options.startLine))
+        : undefined
+    const requestedEnd =
+      typeof options?.endLine === "number" && Number.isFinite(options.endLine)
+        ? Math.max(1, Math.floor(options.endLine))
+        : undefined
+    const requireCoverage = options?.requireCoverage !== false
+
+    for (let index = session.readSnapshots.length - 1; index >= 0; index--) {
+      const snapshot = session.readSnapshots[index]
+      if (!snapshot || snapshot.filePath !== normalizedPath) continue
+
+      if (requestedStart == null && requestedEnd == null) {
+        return snapshot
+      }
+
+      if (snapshot.startLine == null || snapshot.endLine == null) {
+        if (!requireCoverage) return snapshot
+        continue
+      }
+
+      const coversRequestedRange =
+        (requestedStart == null || snapshot.startLine <= requestedStart) &&
+        (requestedEnd == null || snapshot.endLine >= requestedEnd)
+      if (coversRequestedRange) {
+        return snapshot
+      }
+      if (!requireCoverage) {
+        return snapshot
+      }
+    }
+
+    return undefined
   }
 
   /**
@@ -3137,6 +3342,59 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
     session.lastActivityAt = new Date()
     session.contextState.records = session.messageRecords
     this.schedulePersist(conversationId)
+  }
+
+  getInvestigationMemory(
+    conversationId: string
+  ): ContextInvestigationMemoryEntry[] {
+    const session = this.getSession(conversationId)
+    if (!session) return []
+    return session.contextState.investigationMemory.map((entry) => ({
+      ...entry,
+      toolCallIds: [...entry.toolCallIds],
+    }))
+  }
+
+  getInvestigationMemoryAttachmentSnapshot(
+    conversationId: string
+  ): InvestigationMemorySummaryLike[] {
+    return this.getInvestigationMemory(conversationId).map((entry) => ({
+      label: entry.label,
+      details: entry.details,
+      toolCount: entry.toolCount,
+      readOnly: entry.readOnly,
+      createdAt: entry.createdAt,
+    }))
+  }
+
+  replaceInvestigationMemory(
+    conversationId: string,
+    entries: ContextInvestigationMemoryEntry[]
+  ): void {
+    const session = this.getSession(conversationId)
+    if (!session) return
+    session.contextState.investigationMemory = entries.map((entry) => ({
+      ...entry,
+      toolCallIds: [...entry.toolCallIds],
+    }))
+    session.lastActivityAt = new Date()
+    this.schedulePersist(conversationId)
+  }
+
+  clearInvestigationMemory(conversationId: string): void {
+    this.replaceInvestigationMemory(conversationId, [])
+  }
+
+  appendInvestigationMemory(
+    conversationId: string,
+    entry: ContextInvestigationMemoryEntry,
+    limit: number
+  ): ContextInvestigationMemoryEntry[] {
+    const next = [...this.getInvestigationMemory(conversationId), entry].slice(
+      -Math.max(1, limit)
+    )
+    this.replaceInvestigationMemory(conversationId, next)
+    return next
   }
 
   recordAssistantResponseUsage(

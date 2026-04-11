@@ -5,6 +5,7 @@ import * as path from "path"
 import {
   type ContextAttachmentSnapshot,
   ContextManagerService,
+  type ContextInvestigationMemoryEntry,
   type ContextUsageSnapshot,
   extractText,
   type LooseMessageContent,
@@ -55,11 +56,11 @@ import { normalizeBugfixResultItems as normalizeBugfixResultItemsFromContract } 
 import {
   ChatSession,
   ChatSessionManager,
+  EditFailureContext,
   InterruptedToolCallInfo,
   PendingToolCall,
   SessionBackgroundCommand,
   SessionActiveToolBatch,
-  SessionCompletedToolBatchSummary,
   SessionRestartRecovery,
   SessionTodoItem,
   SessionTodoStatus,
@@ -88,6 +89,13 @@ import {
   resolveMcpToolDefinition,
 } from "./mcp-call-contract"
 import { SemanticSearchProviderService } from "./semantic-search-provider.service"
+import {
+  buildNumberedLineEntries,
+  extractEditFailureSelection,
+  findToolResultAppendPlan,
+  formatLineNumberedSnippet,
+  messageContainsToolResult,
+} from "./tool-protocol-helpers"
 import {
   canonicalizeOfficialAntigravityToolInvocation as canonicalizeOfficialAntigravityToolInvocationFromContract,
   extractOfficialAntigravityArtifactMetadata as extractOfficialAntigravityArtifactMetadataFromContract,
@@ -320,6 +328,14 @@ interface ToolInputWithPath {
   [key: string]: unknown
 }
 
+interface EditResolvedMatch {
+  requestedStartLine?: number
+  requestedEndLine?: number
+  matchedStartLine: number
+  matchedEndLine: number
+  chunkIndex?: number
+}
+
 interface ActiveToolCall {
   id: string
   name: string
@@ -507,6 +523,13 @@ interface ToolCompletedExtraData {
   writeShellStdinSuccess?: {
     shellId?: number
     terminalFileLengthBeforeInputWritten?: number
+  }
+  editFailureContext?: EditFailureContext & {
+    currentRangeSnippet?: string
+    currentRangeSnippetStartLine?: number
+    currentRangeSnippetEndLine?: number
+    currentRangeSnippetTruncated?: boolean
+    matchCountInFile?: number
   }
   toolResultState?: {
     status: ToolResultStatus
@@ -1614,6 +1637,10 @@ export class CursorConnectStreamService {
         content: todo.content,
         status: todo.status,
       })),
+      investigationSummaries:
+        this.sessionManager.getInvestigationMemoryAttachmentSnapshot(
+          session.conversationId
+        ),
     }
   }
 
@@ -2174,8 +2201,69 @@ export class CursorConnectStreamService {
     toolCallId: string,
     toolName: string,
     toolInput: Record<string, unknown>,
-    toolResultContent: string
+    toolResultContent: string,
+    structuredContent?: Record<string, unknown>
   ): void {
+    const appendPlan = findToolResultAppendPlan(
+      session.messages as Array<{
+        role: "user" | "assistant"
+        content: unknown
+      }>,
+      toolCallId
+    )
+    if (appendPlan?.mode === "merge_into_existing_user_message") {
+      const targetUserMessageIndex = appendPlan.userMessageIndex
+      if (targetUserMessageIndex != null) {
+        const targetUserMessage = session.messages[targetUserMessageIndex]
+        if (
+          targetUserMessage?.role === "user" &&
+          messageContainsToolResult(targetUserMessage.content, toolCallId)
+        ) {
+          return
+        }
+        if (
+          targetUserMessage?.role === "user" &&
+          !messageContainsToolResult(targetUserMessage.content, toolCallId)
+        ) {
+          const mergedMessages = session.messages.map((message, index) => {
+            if (index !== targetUserMessageIndex) {
+              return message
+            }
+            const blocks = Array.isArray(message.content)
+              ? message.content.map((block) => structuredClone(block))
+              : []
+            blocks.push({
+              type: "tool_result",
+              tool_use_id: toolCallId,
+              content: toolResultContent,
+              ...(structuredContent ? { structuredContent } : {}),
+            })
+            return {
+              ...message,
+              content: blocks as MessageContent,
+            }
+          })
+          this.sessionManager.replaceMessages(
+            session.conversationId,
+            mergedMessages
+          )
+          return
+        }
+      }
+    }
+
+    if (appendPlan?.mode === "append_new_user_message") {
+      this.sessionManager.addMessage(session.conversationId, "user", [
+        {
+          type: "tool_result" as const,
+          tool_use_id: toolCallId,
+          content: toolResultContent,
+          ...(structuredContent ? { structuredContent } : {}),
+        },
+      ])
+      return
+    }
+
     const lastMessage = session.messages[session.messages.length - 1]
     if (
       !lastMessage ||
@@ -2210,6 +2298,7 @@ export class CursorConnectStreamService {
         type: "tool_result" as const,
         tool_use_id: toolCallId,
         content: toolResultContent,
+        ...(structuredContent ? { structuredContent } : {}),
       },
     ])
   }
@@ -3647,7 +3736,8 @@ ${raw}
         `Recommended strategy:`,
         `1. Use grep_search to locate relevant symbols/errors first.`,
         `2. Use read_file with start_line/end_line windows (<= 400 lines each).`,
-        `3. Iterate chunk-by-chunk and keep intermediate notes before final synthesis.`,
+        `3. Do not switch to run_terminal_command with grep, rg, sed, cat, head, or tail unless the user explicitly asked for shell commands.`,
+        `4. Iterate chunk-by-chunk and keep intermediate notes before final synthesis.`,
       ]
     } else if (this.isShellLikeTool(toolName)) {
       strategy = [
@@ -3770,7 +3860,8 @@ ${raw}
         toolName,
         toolInput,
         content,
-        toolResultState
+        toolResultState,
+        extraData?.editFailureContext
       )
     }
 
@@ -4019,7 +4110,8 @@ ${raw}
     toolName: string,
     toolInput: Record<string, unknown>,
     content: string,
-    toolResultState?: { status: ToolResultStatus; message?: string }
+    toolResultState?: { status: ToolResultStatus; message?: string },
+    editFailureContext?: ToolCompletedExtraData["editFailureContext"]
   ): string {
     const path =
       this.pickFirstString(toolInput, [
@@ -4044,6 +4136,9 @@ ${raw}
       return `[${normalizedToolName} rejected] ${toolResultState.message || "request rejected"}${path ? ` (path: ${path})` : ""}`
     }
     if (toolResultState && toolResultState.status !== "success") {
+      if (editFailureContext && content.trim()) {
+        return content
+      }
       return `[${normalizedToolName} error] ${toolResultState.message || "request failed"}${path ? ` (path: ${path})` : ""}`
     }
 
@@ -4055,7 +4150,7 @@ ${raw}
     if (payload) lines.push(`omitted_payload_size: ${payload.length} chars`)
     if (warning) lines.push(`warning: ${warning}`)
     lines.push(
-      `follow_up: use read_file with focused line ranges or grep_search if more context is needed`
+      `follow_up: use read_file with focused line ranges or grep_search if more context is needed; avoid shell grep/sed/cat when structured tools can express the request`
     )
     return lines.join("\n")
   }
@@ -4199,6 +4294,18 @@ ${raw}
     }
   }
 
+  private findSubstringOffsets(haystack: string, needle: string): number[] {
+    if (!needle) return []
+    const offsets: number[] = []
+    let cursor = 0
+    while (true) {
+      const idx = haystack.indexOf(needle, cursor)
+      if (idx < 0) return offsets
+      offsets.push(idx)
+      cursor = idx + needle.length
+    }
+  }
+
   private pickFirstRawString(
     source: Record<string, unknown>,
     keys: string[],
@@ -4215,17 +4322,56 @@ ${raw}
     return undefined
   }
 
-  private resolveContentLineRange(
-    content: string,
-    startLine?: number,
-    endLine?: number
-  ): { startOffset: number; endOffset: number; warning?: string } {
+  private computeContentLineStarts(content: string): number[] {
     const lineStarts = [0]
     for (let index = 0; index < content.length; index++) {
       if (content[index] === "\n") {
         lineStarts.push(index + 1)
       }
     }
+    return lineStarts
+  }
+
+  private resolveLineNumberFromOffset(
+    lineStarts: number[],
+    offset: number
+  ): number {
+    if (lineStarts.length === 0) return 1
+
+    let low = 0
+    let high = lineStarts.length - 1
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2)
+      const lineStart = lineStarts[mid] ?? 0
+      const nextLineStart =
+        mid + 1 < lineStarts.length
+          ? (lineStarts[mid + 1] ?? Number.MAX_SAFE_INTEGER)
+          : Number.MAX_SAFE_INTEGER
+      if (offset < lineStart) {
+        high = mid - 1
+        continue
+      }
+      if (offset >= nextLineStart) {
+        low = mid + 1
+        continue
+      }
+      return mid + 1
+    }
+
+    return Math.max(1, Math.min(lineStarts.length, low + 1))
+  }
+
+  private resolveContentLineRange(
+    content: string,
+    startLine?: number,
+    endLine?: number
+  ): {
+    startOffset: number
+    endOffset: number
+    lineStarts: number[]
+    warning?: string
+  } {
+    const lineStarts = this.computeContentLineStarts(content)
 
     const totalLines = Math.max(1, lineStarts.length)
     const resolvedStartLine = startLine ?? 1
@@ -4241,6 +4387,7 @@ ${raw}
       return {
         startOffset: 0,
         endOffset: content.length,
+        lineStarts,
         warning: `edit_file line range ${resolvedStartLine}-${resolvedEndLine} is invalid for ${totalLines} line(s)`,
       }
     }
@@ -4254,6 +4401,7 @@ ${raw}
     return {
       startOffset,
       endOffset,
+      lineStarts,
     }
   }
 
@@ -4267,7 +4415,12 @@ ${raw}
       endLine?: number
       warningPrefix: string
     }
-  ): { fileText: string; warning?: string } {
+  ): {
+    fileText: string
+    warning?: string
+    failureContext?: EditFailureContext
+    resolvedMatch?: EditResolvedMatch
+  } {
     const searchText = options.searchText
     const replaceText = options.replaceText
     const allowMultiple = options.allowMultiple || false
@@ -4276,6 +4429,15 @@ ${raw}
       return {
         fileText: content,
         warning: `${options.warningPrefix} has empty target content`,
+        failureContext: {
+          filePath: "",
+          reason: "empty_target",
+          startLine: options.startLine,
+          endLine: options.endLine,
+          allowMultiple,
+          searchText,
+          replaceTextLength: replaceText.length,
+        },
       }
     }
 
@@ -4288,24 +4450,120 @@ ${raw}
       return {
         fileText: content,
         warning: range.warning,
+        failureContext: {
+          filePath: "",
+          reason: "range_invalid",
+          startLine: options.startLine,
+          endLine: options.endLine,
+          allowMultiple,
+          searchText,
+          replaceTextLength: replaceText.length,
+        },
       }
     }
 
     const targetSlice = content.slice(range.startOffset, range.endOffset)
-    const occurrenceCount = this.countSubstringOccurrences(
+    const allMatchOffsets = this.findSubstringOffsets(content, searchText)
+    const matchesWithinRange = allMatchOffsets.filter((offset) => {
+      const matchEnd = offset + searchText.length
+      return offset >= range.startOffset && matchEnd <= range.endOffset
+    })
+    const occurrenceCount = matchesWithinRange.length
+    const singleGlobalMatchOffset =
+      allMatchOffsets.length === 1 ? allMatchOffsets[0] : undefined
+    if (singleGlobalMatchOffset != null) {
+      const globalEndOffset = singleGlobalMatchOffset + searchText.length
+      const matchedStartLine = this.resolveLineNumberFromOffset(
+        range.lineStarts,
+        singleGlobalMatchOffset
+      )
+      const matchedEndLine = this.resolveLineNumberFromOffset(
+        range.lineStarts,
+        Math.max(singleGlobalMatchOffset, globalEndOffset - 1)
+      )
+      return {
+        fileText:
+          content.slice(0, singleGlobalMatchOffset) +
+          replaceText +
+          content.slice(globalEndOffset),
+        resolvedMatch: {
+          requestedStartLine: options.startLine,
+          requestedEndLine: options.endLine,
+          matchedStartLine,
+          matchedEndLine,
+        },
+      }
+    }
+    if (occurrenceCount === 1 && allMatchOffsets.length > 1) {
+      const rangeMatchOffset = matchesWithinRange[0]
+      if (rangeMatchOffset != null) {
+        const rangeMatchEnd = rangeMatchOffset + searchText.length
+        const matchedStartLine = this.resolveLineNumberFromOffset(
+          range.lineStarts,
+          rangeMatchOffset
+        )
+        const matchedEndLine = this.resolveLineNumberFromOffset(
+          range.lineStarts,
+          Math.max(rangeMatchOffset, rangeMatchEnd - 1)
+        )
+        return {
+          fileText:
+            content.slice(0, rangeMatchOffset) +
+            replaceText +
+            content.slice(rangeMatchEnd),
+          resolvedMatch: {
+            requestedStartLine: options.startLine,
+            requestedEndLine: options.endLine,
+            matchedStartLine,
+            matchedEndLine,
+          },
+        }
+      }
+    }
+    const replacementOffsetsInRange = this.findSubstringOffsets(
       targetSlice,
-      searchText
+      replaceText
     )
     if (occurrenceCount === 0) {
+      // Following claude-code's design: searchText not found is always a
+      // failure — never silently assume the edit was "already applied".
+      // If replaceText happens to exist in the range, add a diagnostic
+      // hint but still fail so the model re-reads and decides explicitly.
+      const replacementOccurrenceCount =
+        replaceText.length > 0 ? replacementOffsetsInRange.length : 0
+      const possiblyAppliedHint =
+        replacementOccurrenceCount > 0
+          ? " ReplacementContent already exists in the target range — this edit may have been previously applied. If so, the file is already in the desired state; do not retry."
+          : ""
+      const retryGuidance =
+        searchText.length >= 400
+          ? " Re-run view_file, copy the current file text verbatim, and prefer a shorter unique TargetContent excerpt instead of a large block."
+          : " Re-run view_file and copy the current file text verbatim before retrying."
       const rangeLabel =
         options.startLine != null || options.endLine != null
           ? ` ${options.startLine ?? "?"}-${options.endLine ?? "?"}`
+          : ""
+      const outOfRangeDiagnosis =
+        allMatchOffsets.length > 0
+          ? ` TargetContent exists ${allMatchOffsets.length} time(s) elsewhere in the current file, so the requested line window is inaccurate or not selective enough.`
           : ""
       return {
         fileText: content,
         warning:
           `${options.warningPrefix} target content not found in specified line range${rangeLabel}; ` +
-          `ensure StartLine/EndLine fully cover the entire TargetContent and re-read a slightly wider window`,
+          `ensure StartLine/EndLine fully cover the entire TargetContent and re-read a slightly wider window.` +
+          outOfRangeDiagnosis +
+          possiblyAppliedHint +
+          retryGuidance,
+        failureContext: {
+          filePath: "",
+          reason: "target_not_found",
+          startLine: options.startLine,
+          endLine: options.endLine,
+          allowMultiple,
+          searchText,
+          replaceTextLength: replaceText.length,
+        },
       }
     }
     if (!allowMultiple && occurrenceCount > 1) {
@@ -4318,12 +4576,19 @@ ${raw}
         warning:
           `${options.warningPrefix} matched ${occurrenceCount} times in specified line range${rangeLabel}; ` +
           `narrow StartLine/EndLine so the TargetContent is unique`,
+        failureContext: {
+          filePath: "",
+          reason: "ambiguous_target",
+          startLine: options.startLine,
+          endLine: options.endLine,
+          allowMultiple,
+          searchText,
+          replaceTextLength: replaceText.length,
+        },
       }
     }
 
-    const replacedSlice = allowMultiple
-      ? targetSlice.split(searchText).join(replaceText)
-      : targetSlice.replace(searchText, replaceText)
+    const replacedSlice = targetSlice.split(searchText).join(replaceText)
 
     return {
       fileText:
@@ -4464,6 +4729,386 @@ ${raw}
     return parts.join(" | ")
   }
 
+  private maybeRecordReadSnapshot(
+    conversationId: string,
+    pendingToolCall: PendingToolCall,
+    rawToolResultContent: string,
+    toolResultState?: { status: ToolResultStatus; message?: string }
+  ): void {
+    const normalizedToolName = pendingToolCall.toolName.trim().toLowerCase()
+    const normalizedHistoryToolName = (pendingToolCall.historyToolName || "")
+      .trim()
+      .toLowerCase()
+    const isReadLikeTool =
+      normalizedToolName === "read_file" ||
+      normalizedToolName === "read_file_v2" ||
+      normalizedHistoryToolName === "view_file"
+    if (!isReadLikeTool) {
+      return
+    }
+    if (toolResultState && toolResultState.status !== "success") {
+      return
+    }
+
+    const filePath =
+      this.pickFirstString(pendingToolCall.toolInput, ["path"]) ||
+      this.pickFirstString(pendingToolCall.historyToolInput || {}, [
+        "TargetFile",
+        "AbsolutePath",
+      ]) ||
+      ""
+    if (!filePath || !rawToolResultContent) {
+      return
+    }
+
+    const startLine = this.pickFirstNumber(pendingToolCall.toolInput, [
+      "start_line",
+      "startLine",
+      "StartLine",
+    ])
+    const endLine = this.pickFirstNumber(pendingToolCall.toolInput, [
+      "end_line",
+      "endLine",
+      "EndLine",
+    ])
+    const recorded = this.sessionManager.addReadSnapshot(conversationId, {
+      filePath,
+      startLine,
+      endLine,
+      content: rawToolResultContent,
+      sourceToolName:
+        pendingToolCall.historyToolName ||
+        pendingToolCall.toolName ||
+        "read_file",
+    })
+    if (recorded) {
+      this.logger.debug(
+        `Recorded read snapshot for ${filePath} (${startLine ?? "?"}-${endLine ?? "?"})`
+      )
+    }
+  }
+
+  private buildEditFailureContext(
+    pendingToolCall: PendingToolCall
+  ): ToolCompletedExtraData["editFailureContext"] | undefined {
+    const beforeContent = pendingToolCall.beforeContent
+    if (typeof beforeContent !== "string") {
+      return undefined
+    }
+
+    const toolInput = pendingToolCall.toolInput
+    const selection =
+      pendingToolCall.editFailureContext ||
+      (() => {
+        const extracted = extractEditFailureSelection(
+          toolInput,
+          pendingToolCall.editApplyWarning
+        )
+        if (!extracted) return undefined
+        return {
+          filePath:
+            this.pickFirstString(toolInput, [
+              "path",
+              "filePath",
+              "file_path",
+              "TargetFile",
+            ]) || "",
+          reason: "target_not_found" as const,
+          ...extracted,
+        }
+      })()
+    if (!selection) {
+      return undefined
+    }
+
+    const snippet = formatLineNumberedSnippet(beforeContent, {
+      startLine: selection.startLine,
+      endLine: selection.endLine,
+      maxLines: 120,
+    })
+    const searchText =
+      typeof selection.searchText === "string" ? selection.searchText : ""
+    const matchCountInFile =
+      searchText.length > 0
+        ? this.countSubstringOccurrences(beforeContent, searchText)
+        : undefined
+
+    return {
+      ...selection,
+      currentRangeSnippet: snippet.snippet,
+      currentRangeSnippetStartLine: snippet.startLine,
+      currentRangeSnippetEndLine: snippet.endLine,
+      currentRangeSnippetTruncated: snippet.truncated,
+      matchCountInFile,
+    }
+  }
+
+  private buildEditFailureToolResultContent(
+    conversationId: string,
+    pendingToolCall: PendingToolCall
+  ): {
+    content: string
+    context?: ToolCompletedExtraData["editFailureContext"]
+  } {
+    const warning =
+      pendingToolCall.editApplyWarning || "edit_file apply failed before write"
+    const context = this.buildEditFailureContext(pendingToolCall)
+    if (!context) {
+      return {
+        content: `[edit_apply_failed]\nreason: ${warning}`,
+      }
+    }
+
+    const lines = ["[edit_apply_failed]"]
+    if (context.filePath) {
+      lines.push(`path: ${context.filePath}`)
+    }
+    lines.push(`reason: ${warning}`)
+    if (
+      context.currentRangeSnippetStartLine != null ||
+      context.currentRangeSnippetEndLine != null
+    ) {
+      lines.push(
+        `requested_range: ${context.currentRangeSnippetStartLine ?? context.startLine ?? "?"}-${context.currentRangeSnippetEndLine ?? context.endLine ?? "?"}`
+      )
+    }
+    if (typeof context.searchText === "string") {
+      lines.push(`target_content_length: ${context.searchText.length}`)
+    }
+    if (typeof context.replaceTextLength === "number") {
+      lines.push(`replacement_content_length: ${context.replaceTextLength}`)
+    }
+    if (typeof context.matchCountInFile === "number") {
+      lines.push(
+        `target_content_matches_in_current_file: ${context.matchCountInFile}`
+      )
+      lines.push(
+        context.matchCountInFile > 0
+          ? "diagnosis: TargetContent exists in the current file, but not inside the requested line window. Fix StartLine/EndLine."
+          : "diagnosis: TargetContent does not exist verbatim in the current file. Re-copy the exact current_text before retrying."
+      )
+    }
+    const latestSnapshot = this.sessionManager.getLatestReadSnapshot(
+      conversationId,
+      context.filePath,
+      {
+        startLine: context.startLine,
+        endLine: context.endLine,
+        requireCoverage: false,
+      }
+    )
+    if (latestSnapshot?.sourceToolName) {
+      lines.push(`latest_snapshot_source: ${latestSnapshot.sourceToolName}`)
+    }
+    lines.push("current_text:")
+    lines.push(context.currentRangeSnippet || "[no current text available]")
+    if (context.currentRangeSnippetTruncated) {
+      lines.push("[current_text truncated]")
+    }
+
+    return {
+      content: lines.join("\n"),
+      context,
+    }
+  }
+
+  private toStructuredToolResultScalar(
+    value: string | number | boolean | bigint | undefined
+  ): string | number | boolean | undefined {
+    if (value == null) return undefined
+    if (typeof value === "bigint") return value.toString()
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : undefined
+    }
+    return value
+  }
+
+  private buildOfficialViewFileStructuredToolResult(
+    pendingToolCall: PendingToolCall,
+    extraData?: ToolCompletedExtraData
+  ): Record<string, unknown> | undefined {
+    const readContent = extraData?.readSuccess?.content
+    if (typeof readContent !== "string") {
+      return undefined
+    }
+
+    const actualInput = pendingToolCall.toolInput || {}
+    const historyInput = pendingToolCall.historyToolInput || {}
+    const filePath =
+      extraData?.readSuccess?.path ||
+      this.pickFirstString(actualInput, ["path", "filePath", "file_path"]) ||
+      this.pickFirstString(historyInput, [
+        "AbsolutePath",
+        "path",
+        "filePath",
+        "file_path",
+      ]) ||
+      ""
+    const actualStartLine =
+      this.pickFirstNumber(actualInput, [
+        "start_line",
+        "startLine",
+        "StartLine",
+      ]) ?? 1
+    const requestedStartLine = this.pickFirstNumber(historyInput, [
+      "StartLine",
+      "startLine",
+      "start_line",
+    ])
+    const requestedEndLine = this.pickFirstNumber(historyInput, [
+      "EndLine",
+      "endLine",
+      "end_line",
+    ])
+    const numbered = buildNumberedLineEntries(readContent, actualStartLine)
+    const structured: Record<string, unknown> = {
+      output: numbered.text.length > 0 ? numbered.text : readContent,
+      AbsolutePath: filePath,
+      StartLine: actualStartLine,
+      EndLine: numbered.endLine,
+      IncludeLineNumbers: true,
+      ReturnedLineCount: numbered.lines.length,
+    }
+
+    if (readContent.length === 0) {
+      structured.IsEmpty = true
+    }
+
+    if (numbered.lines.length > 0) {
+      structured.Lines = numbered.lines
+    }
+
+    if (requestedStartLine != null && requestedStartLine !== actualStartLine) {
+      structured.RequestedStartLine = requestedStartLine
+    }
+    if (requestedEndLine != null && requestedEndLine !== numbered.endLine) {
+      structured.RequestedEndLine = requestedEndLine
+    }
+
+    const totalLines = this.toStructuredToolResultScalar(
+      extraData?.readSuccess?.totalLines
+    )
+    if (totalLines != null) {
+      structured.TotalLines = totalLines
+    }
+
+    const fileSizeBytes = this.toStructuredToolResultScalar(
+      extraData?.readSuccess?.fileSize
+    )
+    if (fileSizeBytes != null) {
+      structured.FileSizeBytes = fileSizeBytes
+    }
+
+    if (typeof extraData?.readSuccess?.truncated === "boolean") {
+      structured.Truncated = extraData.readSuccess.truncated
+    }
+
+    const isSkillFile = this.pickFirstBoolean(historyInput, [
+      "IsSkillFile",
+      "isSkillFile",
+      "is_skill_file",
+    ])
+    if (typeof isSkillFile === "boolean") {
+      structured.IsSkillFile = isSkillFile
+    }
+
+    return structured
+  }
+
+  private buildOfficialEditFailureStructuredToolResult(
+    toolResultContent: string,
+    toolResultState: { status: ToolResultStatus; message?: string } | undefined,
+    extraData?: ToolCompletedExtraData
+  ): Record<string, unknown> | undefined {
+    const context = extraData?.editFailureContext
+    if (!context) {
+      return undefined
+    }
+
+    const structured: Record<string, unknown> = {
+      output:
+        toolResultState?.message ||
+        toolResultContent.split(/\r?\n/, 1)[0] ||
+        "[edit_apply_failed]",
+      AbsolutePath: context.filePath,
+      FailureReason: context.reason,
+    }
+
+    if (context.startLine != null) {
+      structured.RequestedStartLine = context.startLine
+    }
+    if (context.endLine != null) {
+      structured.RequestedEndLine = context.endLine
+    }
+    if (typeof context.allowMultiple === "boolean") {
+      structured.AllowMultiple = context.allowMultiple
+    }
+    if (typeof context.searchText === "string") {
+      structured.TargetContent = context.searchText
+      structured.TargetContentLength = context.searchText.length
+    }
+    if (typeof context.replaceTextLength === "number") {
+      structured.ReplacementContentLength = context.replaceTextLength
+    }
+    if (typeof context.matchCountInFile === "number") {
+      structured.TargetContentMatchesInCurrentFile = context.matchCountInFile
+      structured.Diagnosis =
+        context.matchCountInFile > 0
+          ? "TargetContent exists in the current file, but not inside the requested line window."
+          : "TargetContent does not exist verbatim in the current file."
+    }
+    if (typeof context.currentRangeSnippet === "string") {
+      structured.CurrentTextWithLineNumbers = context.currentRangeSnippet
+    }
+    if (context.currentRangeSnippetStartLine != null) {
+      structured.CurrentTextStartLine = context.currentRangeSnippetStartLine
+    }
+    if (context.currentRangeSnippetEndLine != null) {
+      structured.CurrentTextEndLine = context.currentRangeSnippetEndLine
+    }
+    if (typeof context.currentRangeSnippetTruncated === "boolean") {
+      structured.CurrentTextTruncated = context.currentRangeSnippetTruncated
+    }
+
+    return structured
+  }
+
+  private buildStructuredHistoryToolResult(
+    pendingToolCall: PendingToolCall,
+    toolResultContent: string,
+    toolResultState: { status: ToolResultStatus; message?: string } | undefined,
+    extraData?: ToolCompletedExtraData
+  ): Record<string, unknown> | undefined {
+    const historyToolName = (
+      pendingToolCall.historyToolName ||
+      pendingToolCall.toolName ||
+      ""
+    )
+      .trim()
+      .toLowerCase()
+
+    if (historyToolName === "view_file") {
+      return this.buildOfficialViewFileStructuredToolResult(
+        pendingToolCall,
+        extraData
+      )
+    }
+
+    if (
+      historyToolName === "replace_file_content" ||
+      historyToolName === "multi_replace_file_content" ||
+      historyToolName === "write_to_file"
+    ) {
+      return this.buildOfficialEditFailureStructuredToolResult(
+        toolResultContent,
+        toolResultState,
+        extraData
+      )
+    }
+
+    return undefined
+  }
+
   /**
    * Build full file text for edit/edit_file/edit_file_v2 tools.
    * Protocol requirement: writeArgs.fileText must be the complete file content,
@@ -4472,9 +5117,15 @@ ${raw}
   private applyEditInputToFileText(
     beforeContent: string,
     toolInput: ToolInputWithPath
-  ): { fileText: string; warning?: string } {
+  ): {
+    fileText: string
+    warning?: string
+    failureContext?: EditFailureContext
+    resolvedMatches?: EditResolvedMatch[]
+  } {
     const explicitFullFileText =
       typeof toolInput.file_text === "string" ? toolInput.file_text : undefined
+    const filePath = typeof toolInput.path === "string" ? toolInput.path : ""
     if (explicitFullFileText !== undefined) {
       const overwrite = this.pickFirstBoolean(
         toolInput as Record<string, unknown>,
@@ -4485,6 +5136,10 @@ ${raw}
           fileText: beforeContent,
           warning:
             "write_to_file target already exists and requires overwrite=true; no changes applied",
+          failureContext: {
+            filePath,
+            reason: "unsafe_overwrite",
+          },
         }
       }
       return { fileText: explicitFullFileText }
@@ -4548,11 +5203,17 @@ ${raw}
         : normalizedChunks
 
       let nextContent = beforeContent
+      const resolvedMatches: EditResolvedMatch[] = []
       for (const { rawChunk, index } of orderedChunks) {
         if (!rawChunk || typeof rawChunk !== "object") {
           return {
             fileText: beforeContent,
             warning: `edit_file replacement chunk ${index + 1} is invalid`,
+            failureContext: {
+              filePath,
+              reason: "invalid_chunk",
+              chunkIndex: index,
+            },
           }
         }
         const chunk = rawChunk as Record<string, unknown>
@@ -4592,6 +5253,14 @@ ${raw}
           return {
             fileText: beforeContent,
             warning: `edit_file replacement chunk ${index + 1} is missing target/replacement content`,
+            failureContext: {
+              filePath,
+              reason: "missing_content",
+              startLine,
+              endLine,
+              allowMultiple,
+              chunkIndex: index,
+            },
           }
         }
         const chunkEdit = this.applySearchReplaceWithinRange(nextContent, {
@@ -4606,13 +5275,38 @@ ${raw}
           return {
             fileText: beforeContent,
             warning: chunkEdit.warning,
+            failureContext: chunkEdit.failureContext
+              ? {
+                  ...chunkEdit.failureContext,
+                  filePath,
+                  chunkIndex: index,
+                }
+              : {
+                  filePath,
+                  reason: "target_not_found",
+                  startLine,
+                  endLine,
+                  allowMultiple,
+                  searchText,
+                  replaceTextLength: replaceText.length,
+                  chunkIndex: index,
+                },
           }
         }
 
+        if (chunkEdit.resolvedMatch) {
+          resolvedMatches.push({
+            ...chunkEdit.resolvedMatch,
+            chunkIndex: index,
+          })
+        }
         nextContent = chunkEdit.fileText
       }
 
-      return { fileText: nextContent }
+      return {
+        fileText: nextContent,
+        ...(resolvedMatches.length > 0 ? { resolvedMatches } : {}),
+      }
     }
 
     const searchText =
@@ -4645,6 +5339,10 @@ ${raw}
         fileText: beforeContent,
         warning:
           "edit_file input missing search/replace pair; skipped destructive overwrite",
+        failureContext: {
+          filePath,
+          reason: "missing_search_replace",
+        },
       }
     }
 
@@ -4656,17 +5354,44 @@ ${raw}
         fileText: beforeContent,
         warning:
           "edit_file search text is empty; skipped destructive overwrite",
+        failureContext: {
+          filePath,
+          reason: "empty_search",
+          startLine,
+          endLine,
+          allowMultiple,
+          searchText,
+          replaceTextLength: replaceText.length,
+        },
       }
     }
 
-    return this.applySearchReplaceWithinRange(beforeContent, {
-      searchText,
-      replaceText,
-      allowMultiple,
-      startLine,
-      endLine,
-      warningPrefix: "edit_file search text",
-    })
+    const searchReplaceResult = this.applySearchReplaceWithinRange(
+      beforeContent,
+      {
+        searchText,
+        replaceText,
+        allowMultiple,
+        startLine,
+        endLine,
+        warningPrefix: "edit_file search text",
+      }
+    )
+    if (!searchReplaceResult.failureContext) {
+      return {
+        ...searchReplaceResult,
+        ...(searchReplaceResult.resolvedMatch
+          ? { resolvedMatches: [searchReplaceResult.resolvedMatch] }
+          : {}),
+      }
+    }
+    return {
+      ...searchReplaceResult,
+      failureContext: {
+        ...searchReplaceResult.failureContext,
+        filePath,
+      },
+    }
   }
 
   private normalizeInlineWebToolFamily(
@@ -9881,10 +10606,10 @@ ${raw}
         readOnlyBatchCount: 0,
         hasMutatingToolCall: false,
         forcedSynthesisAttempted: false,
-        completedBatchSummaries: [],
       }
       this.sessionManager.markSessionDirty(conversationId)
     }
+
     return session.topLevelAgentTurnState
   }
 
@@ -9892,12 +10617,15 @@ ${raw}
     session: ChatSession,
     conversationId: string
   ): void {
+    // Investigation memory now lives in persistent context state rather than
+    // per-turn top-level agent state.  Do not clear it here; let bounded
+    // append/replace logic control retention so recent evidence can survive
+    // across top-level turns within the same conversation.
     session.topLevelAgentTurnState = {
       llmTurnCount: 1,
       readOnlyBatchCount: 0,
       hasMutatingToolCall: false,
       forcedSynthesisAttempted: false,
-      completedBatchSummaries: [],
     }
     this.sessionManager.markSessionDirty(conversationId)
   }
@@ -9949,7 +10677,7 @@ ${raw}
     session: ChatSession,
     toolCallId: string,
     toolResultContent: string
-  ): SessionCompletedToolBatchSummary | undefined {
+  ): ContextInvestigationMemoryEntry | undefined {
     const state = this.getTopLevelAgentTurnState(session, conversationId)
     const activeBatch = state.activeToolBatch
     if (!activeBatch) {
@@ -9975,15 +10703,11 @@ ${raw}
     }
 
     const summary = this.buildCompletedToolBatchSummary(activeBatch)
-    state.completedBatchSummaries.push(summary)
-    if (
-      state.completedBatchSummaries.length >
+    this.sessionManager.appendInvestigationMemory(
+      conversationId,
+      summary,
       this.TOP_LEVEL_AGENT_SUMMARY_MEMORY_LIMIT
-    ) {
-      state.completedBatchSummaries = state.completedBatchSummaries.slice(
-        -this.TOP_LEVEL_AGENT_SUMMARY_MEMORY_LIMIT
-      )
-    }
+    )
     if (activeBatch.readOnly) {
       state.readOnlyBatchCount += 1
     } else {
@@ -9996,7 +10720,7 @@ ${raw}
 
   private buildCompletedToolBatchSummary(
     batch: SessionActiveToolBatch
-  ): SessionCompletedToolBatchSummary {
+  ): ContextInvestigationMemoryEntry {
     const label = this.buildToolBatchLabel(batch)
     const detailLines = batch.tools
       .slice(0, this.TOOL_BATCH_SUMMARY_DETAILS_LIMIT)
@@ -10195,28 +10919,6 @@ ${raw}
     )
   }
 
-  private buildTopLevelSummaryMemoryPrompt(
-    session: ChatSession
-  ): string | undefined {
-    const state = session.topLevelAgentTurnState
-    if (!state || state.completedBatchSummaries.length === 0) {
-      return undefined
-    }
-
-    const recentSummaries = state.completedBatchSummaries
-      .slice(-this.TOP_LEVEL_AGENT_SUMMARY_MEMORY_LIMIT)
-      .map(
-        (summary, index) => `${index + 1}. ${summary.label}\n${summary.details}`
-      )
-      .join("\n\n")
-
-    return [
-      "Recent tool-batch progress:",
-      recentSummaries,
-      "Prefer synthesizing from this collected evidence instead of repeating equivalent investigative tool calls.",
-    ].join("\n")
-  }
-
   private shouldAdviseTopLevelReadOnlySynthesis(session: ChatSession): boolean {
     const state = session.topLevelAgentTurnState
     if (!state) return false
@@ -10226,18 +10928,22 @@ ${raw}
 
   private buildReadOnlySynthesisAdvisoryPrompt(session: ChatSession): string {
     const state = session.topLevelAgentTurnState
-    const recentProgress = this.buildTopLevelSummaryMemoryPrompt(session)
     const readOnlyTurns = state?.readOnlyBatchCount || 0
-    return [
+    const hasInvestigationMemory =
+      session.contextState.investigationMemory.length > 0
+    const lines = [
       `The current top-level agent turn has already completed ${readOnlyTurns} read-only investigative tool batches.`,
       "Prefer synthesizing from the evidence already gathered instead of repeating equivalent investigative tool calls.",
       "If the task requires a report, artifact, or file edit, do that write now instead of saying that you will do it next.",
       "Only call another tool if it is materially necessary to reduce uncertainty or validate a concrete remaining hypothesis.",
       "Do not end the task early if meaningful work is still required; continue until you can complete the request or clearly explain the blocker.",
-      recentProgress || "",
     ]
-      .filter((line) => line.length > 0)
-      .join("\n\n")
+    if (hasInvestigationMemory) {
+      lines.push(
+        "A summary of recent investigative evidence should be visible in context attachments; prefer reusing it instead of rebuilding the same search/read batches."
+      )
+    }
+    return lines.join("\n\n")
   }
 
   private filterCloudCodeToolsForForcedSynthesis(
@@ -12474,6 +13180,28 @@ ${raw}
             typedInput
           )
           editPending.editApplyWarning = computedEdit.warning
+          editPending.editFailureContext = computedEdit.failureContext
+          if ((computedEdit.resolvedMatches?.length || 0) > 0) {
+            const reconciled = computedEdit.resolvedMatches
+              ?.map((match) => {
+                const requestedRange =
+                  match.requestedStartLine != null ||
+                  match.requestedEndLine != null
+                    ? `${match.requestedStartLine ?? "?"}-${match.requestedEndLine ?? "?"}`
+                    : "file-wide"
+                const matchedRange = `${match.matchedStartLine}-${match.matchedEndLine}`
+                const chunkLabel =
+                  typeof match.chunkIndex === "number"
+                    ? `chunk ${match.chunkIndex + 1} `
+                    : ""
+                return `${chunkLabel}${requestedRange} -> ${matchedRange}`
+              })
+              .join(", ")
+            this.logger.log(
+              `Edit ${editPending.toolCallId} reconciled requested range to exact file match: ${reconciled}`
+            )
+          }
+
           if (computedEdit.warning) {
             const editInputSummary =
               this.summarizeEditToolInputForLogs(typedInput)
@@ -12546,6 +13274,12 @@ ${raw}
     // Format tool result content
     const rawToolResultContent = this.formatToolResult(toolResult)
     let toolResultState = this.deriveToolResultState(toolResult)
+    this.maybeRecordReadSnapshot(
+      conversationId,
+      pendingToolCall,
+      rawToolResultContent,
+      toolResultState
+    )
     if (
       toolResult.resultCase === "read_result" &&
       pendingToolCall.editApplyWarning
@@ -12555,11 +13289,21 @@ ${raw}
         message: pendingToolCall.editApplyWarning,
       }
     }
-    let toolResultContent = this.adaptToolResultForContext(
-      pendingToolCall.toolName,
-      pendingToolCall.toolInput,
-      rawToolResultContent
-    )
+    const editFailureProjection =
+      pendingToolCall.editApplyWarning &&
+      this.isEditToolInvocation(pendingToolCall.toolName)
+        ? this.buildEditFailureToolResultContent(
+            conversationId,
+            pendingToolCall
+          )
+        : undefined
+    let toolResultContent = editFailureProjection
+      ? editFailureProjection.content
+      : this.adaptToolResultForContext(
+          pendingToolCall.toolName,
+          pendingToolCall.toolInput,
+          rawToolResultContent
+        )
     const parsedShellResult = this.extractShellResultPayload(toolResult)
     const inlineShellResult =
       (toolResult.inlineExtraData?.shellResult as
@@ -12655,6 +13399,12 @@ ${raw}
     let extraData: ToolCompletedExtraData | undefined
     if (toolResultState) {
       extraData = { toolResultState }
+    }
+    if (editFailureProjection?.context) {
+      extraData = {
+        ...(extraData || {}),
+        editFailureContext: editFailureProjection.context,
+      }
     }
     if (toolResult.inlineExtraData) {
       extraData = {
@@ -13150,6 +13900,12 @@ ${raw}
       toolResultState,
       extraData
     )
+    const historyToolStructuredContent = this.buildStructuredHistoryToolResult(
+      pendingToolCall,
+      historyToolResultContent,
+      toolResultState,
+      extraData
+    )
     // Persist tool_result before any supersession return. At this point the
     // pending tool call has already been consumed, so dropping the history
     // write would strand resumed streams without either pending state or a
@@ -13159,7 +13915,8 @@ ${raw}
       toolCallId,
       historyToolName,
       historyToolInput,
-      historyToolResultContent
+      historyToolResultContent,
+      historyToolStructuredContent
     )
 
     const completedBatchSummary = this.recordCompletedToolResultInTopLevelState(
@@ -13285,13 +14042,11 @@ ${raw}
       activeSession =
         this.sessionManager.getSession(conversationId) || activeSession
 
-      const summaryMemoryPrompt =
-        this.buildTopLevelSummaryMemoryPrompt(activeSession)
       const synthesisAdvisoryPrompt = adviseSynthesis
         ? this.buildReadOnlySynthesisAdvisoryPrompt(activeSession)
         : undefined
       const additionalSystemPrompt =
-        [summaryMemoryPrompt, synthesisAdvisoryPrompt, forcedSynthesisPrompt]
+        [synthesisAdvisoryPrompt, forcedSynthesisPrompt]
           .filter((prompt): prompt is string => typeof prompt === "string")
           .join("\n\n") || undefined
 
@@ -14438,6 +15193,8 @@ ${raw}
       parts.push(context.customSystemPrompt)
     }
 
+    parts.push(this.buildCursorToolUsageSection())
+
     const cursorRulesSection = this.buildCursorRulesSection(
       this.resolveEffectiveRuleContents(context.cursorRules)
     )
@@ -14486,10 +15243,42 @@ ${raw}
     if (context.customSystemPrompt) {
       parts.push(context.customSystemPrompt)
     }
+    parts.push(this.buildGoogleToolUsageSection())
     if (context.explicitContext) {
       parts.push("Explicit Context:\n" + context.explicitContext)
     }
     return parts.join("\n\n")
+  }
+
+  private buildCursorToolUsageSection(): string {
+    return [
+      "Using your tools:",
+      "- Do NOT use run_terminal_command when a relevant dedicated tool is available. This is critical because dedicated tools keep the session structured and reviewable.",
+      "- To inspect file contents, use read_file instead of cat, sed, head, or tail.",
+      "- To search file contents, use grep_search instead of grep or rg.",
+      "- To discover files or inspect directory contents, use glob_search, file_search, or list_directory instead of find or ls.",
+      "- To edit existing files, use edit_file_v2 instead of sed, awk, perl, python, or shell patching.",
+      "- Before editing, read the file in the current conversation and copy a small unique search snippet verbatim from read_file output. Do not include any display-only line number prefixes.",
+      "- If the task already requires a report, artifact, or file edit and you have enough evidence, perform that write now instead of only saying that you will do it next.",
+      "- Reserve run_terminal_command for build/test execution, system commands, or tasks where no structured tool can express the work.",
+      "- If multiple tool calls are independent, make them in parallel. If one depends on another, run them sequentially.",
+    ].join("\n")
+  }
+
+  private buildGoogleToolUsageSection(): string {
+    return [
+      "Using your tools:",
+      "- Do NOT use run_command when a relevant dedicated tool is available. This is critical because dedicated tools keep the session structured and reviewable.",
+      "- To inspect file contents, use view_file instead of cat, sed, head, or tail.",
+      "- To search file contents, use grep_search instead of grep or rg.",
+      "- To inspect directory contents, use list_dir instead of ls or find.",
+      "- To edit existing files, use replace_file_content or multi_replace_file_content instead of sed, awk, perl, python, or shell patching.",
+      "- To create new files, use write_to_file instead of cat with heredoc, echo redirection, or other shell-based file creation.",
+      "- Before editing, call view_file in the current conversation and copy a small unique TargetContent verbatim from the file text only. Do not include any display-only line number prefixes.",
+      "- If the task already requires a report, artifact, or file edit and you have enough evidence, perform that write now instead of only saying that you will do it next.",
+      "- Reserve run_command for build/test execution, system commands, or tasks where no structured tool can express the work.",
+      "- If multiple tool calls are independent, make them in parallel. If one depends on another, run them sequentially.",
+    ].join("\n")
   }
 
   private buildGoogleContextMessages(

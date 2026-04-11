@@ -20,7 +20,7 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
   CLIENT_SIDE_TOOL_V2_READ_FILE: {
     name: "read_file",
     description:
-      "Read the contents of a file at the specified path. CRITICAL: This tool ONLY works on files. If the path is a directory, using this tool will cause a crash. Use list_directory for directories.",
+      "Read the contents of a file at the specified path. Prefer this tool over run_terminal_command for file inspection. Do not use cat, sed, head, tail, or similar shell commands when read_file can express the request. CRITICAL: This tool ONLY works on files. If the path is a directory, using this tool will cause a crash. Use list_directory for directories.",
     input_schema: {
       type: "object",
       properties: {
@@ -37,7 +37,7 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
   CLIENT_SIDE_TOOL_V2_READ_FILE_V2: {
     name: "read_file",
     description:
-      "Read the contents of a file at the specified path. CRITICAL: This tool ONLY works on files. If the path is a directory, using this tool will cause a crash. Use list_directory for directories.",
+      "Read the contents of a file at the specified path. Prefer this tool over run_terminal_command for file inspection. Do not use cat, sed, head, tail, or similar shell commands when read_file can express the request. CRITICAL: This tool ONLY works on files. If the path is a directory, using this tool will cause a crash. Use list_directory for directories.",
     input_schema: {
       type: "object",
       properties: {
@@ -55,7 +55,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_LIST_DIR: {
     name: "list_directory",
-    description: "List the contents of a directory",
+    description:
+      "List the contents of a directory. Prefer this tool over run_terminal_command with ls, find, or similar shell commands when you need workspace file/directory discovery.",
     input_schema: {
       type: "object",
       properties: {
@@ -74,7 +75,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_LIST_DIR_V2: {
     name: "list_directory",
-    description: "List the contents of a directory",
+    description:
+      "List the contents of a directory. Prefer this tool over run_terminal_command with ls, find, or similar shell commands when you need workspace file/directory discovery.",
     input_schema: {
       type: "object",
       properties: {
@@ -93,7 +95,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_EDIT_FILE: {
     name: "edit_file",
-    description: "Edit a file by applying changes",
+    description:
+      "Edit a file by applying changes. Before editing, read the file in the current conversation. Copy the existing text verbatim from read_file output, excluding any display-only line number prefixes. Prefer a small unique old_text snippet instead of large blocks of surrounding context.",
     input_schema: {
       type: "object",
       properties: {
@@ -107,7 +110,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_EDIT_FILE_V2: {
     name: "edit_file_v2",
-    description: "Edit a file with search and replace",
+    description:
+      "Edit a file with exact search and replace. Before editing, read the file in the current conversation. Prefer a small unique search snippet copied verbatim from read_file output. If read_file output includes display-only line number prefixes, do not include those prefixes in search or replace. Do not use run_terminal_command with sed, perl, python, or shell patching for normal file edits when this tool can express the change.",
     input_schema: {
       type: "object",
       properties: {
@@ -121,7 +125,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_FILE_SEARCH: {
     name: "file_search",
-    description: "Search for files by name pattern",
+    description:
+      "Search for files by name pattern. Prefer this tool over run_terminal_command with find or ls for file discovery when the task is to locate files rather than execute shell logic.",
     input_schema: {
       type: "object",
       properties: {
@@ -133,7 +138,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_GLOB_FILE_SEARCH: {
     name: "glob_search",
-    description: "Search for files using glob patterns",
+    description:
+      "Search for files using glob patterns. Prefer this tool over run_terminal_command with find or ls for file discovery when glob matching is sufficient.",
     input_schema: {
       type: "object",
       properties: {
@@ -145,7 +151,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_RIPGREP_SEARCH: {
     name: "grep_search",
-    description: "Search file contents using ripgrep",
+    description:
+      "Search file contents using ripgrep. ALWAYS use this tool for repository text/code search instead of run_terminal_command with grep, rg, find, or similar shell search commands, unless the user explicitly asks for shell command execution.",
     input_schema: {
       type: "object",
       properties: {
@@ -162,7 +169,8 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
 
   CLIENT_SIDE_TOOL_V2_RIPGREP_RAW_SEARCH: {
     name: "grep_search",
-    description: "Search file contents using ripgrep",
+    description:
+      "Search file contents using ripgrep. ALWAYS use this tool for repository text/code search instead of run_terminal_command with grep, rg, find, or similar shell search commands, unless the user explicitly asks for shell command execution.",
     input_schema: {
       type: "object",
       properties: {
@@ -192,7 +200,7 @@ const CURSOR_TOOL_DEFINITIONS: Record<string, AnthropicTool> = {
   CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2: {
     name: "run_terminal_command",
     description:
-      "Run a command in the terminal. Prefer read_file, list_directory, grep_search, and edit_file_v2 for code inspection or file edits; use this when the user explicitly wants command execution or no structured tool fits.",
+      "Run a command in the terminal. Do NOT use this for normal repository search, file reading, or deterministic file edits when grep_search, read_file, list_directory, or edit_file_v2 can express the task. In particular, avoid grep, rg, find, sed, cat, head, and tail for ordinary code inspection when structured tools are available. Use this when the user explicitly wants command execution or no structured tool fits.",
     input_schema: {
       type: "object",
       properties: {

@@ -1481,6 +1481,39 @@ export class GoogleService {
       : `${content as string}`
   }
 
+  private extractStructuredToolResultResponse(
+    value: unknown
+  ): Record<string, unknown> | null {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return null
+    }
+
+    try {
+      // structuredClone correctly handles BigInt, Date, undefined, and
+      // circular references — unlike JSON roundtrip which throws on BigInt
+      // and silently drops undefined/Date/RegExp values.
+      return structuredClone(value) as Record<string, unknown>
+    } catch {
+      return { ...(value as Record<string, unknown>) }
+    }
+  }
+
+  private buildFunctionResponsePayload(
+    block: Record<string, unknown>
+  ): Record<string, unknown> {
+    const structured = this.extractStructuredToolResultResponse(
+      block.structuredContent
+    )
+    if (structured) {
+      return structured
+    }
+
+    const resultText = this.extractToolResultOutput(block.content)
+    return {
+      output: resultText || ".",
+    }
+  }
+
   private resolveFunctionResponseName(block: Record<string, unknown>): string {
     const explicitName = typeof block.name === "string" ? block.name.trim() : ""
     if (explicitName) return explicitName
@@ -3036,12 +3069,9 @@ export class GoogleService {
         const toolUseId =
           typeof b.tool_use_id === "string" ? b.tool_use_id : undefined
         const functionName = this.resolveFunctionResponseName(b)
-        const resultText = this.extractToolResultOutput(b.content)
         const functionResponse: Record<string, unknown> = {
           name: functionName,
-          response: {
-            output: resultText || ".",
-          },
+          response: this.buildFunctionResponsePayload(b),
         }
         if (toolUseId) {
           functionResponse.id = toolUseId
@@ -3252,12 +3282,9 @@ export class GoogleService {
         const toolUseId =
           typeof b.tool_use_id === "string" ? b.tool_use_id : undefined
         const functionName = this.resolveFunctionResponseName(b)
-        const resultText = this.extractToolResultOutput(b.content)
         const functionResponse: Record<string, unknown> = {
           name: functionName,
-          response: {
-            output: resultText || ".",
-          },
+          response: this.buildFunctionResponsePayload(b),
         }
         if (toolUseId) {
           functionResponse.id = toolUseId
