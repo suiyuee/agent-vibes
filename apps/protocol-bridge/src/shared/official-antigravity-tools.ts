@@ -773,6 +773,9 @@ export function pickOfficialAntigravityFilePath(
 ): string {
   return (
     pickFirstString(input, [
+      "SearchPath",
+      "searchPath",
+      "search_path",
       "TargetFile",
       "targetFile",
       "target_file",
@@ -841,6 +844,80 @@ export function canonicalizeOfficialAntigravityToolInvocation(
   const filePath = pickOfficialAntigravityFilePath(input)
 
   switch (normalized) {
+    case "grep_search": {
+      const query =
+        pickFirstString(input, [
+          "Query",
+          "query",
+          "pattern",
+          "searchTerm",
+          "search_term",
+        ]) || ""
+      const includes = pickStringArray(input, [
+        "Includes",
+        "includes",
+        "include",
+        "glob",
+        "globs",
+      ])
+      const matchPerLine = pickFirstBoolean(input, [
+        "MatchPerLine",
+        "matchPerLine",
+        "match_per_line",
+      ])
+      return {
+        toolName: "grep_search",
+        input: {
+          path:
+            pickFirstString(input, [
+              "SearchPath",
+              "searchPath",
+              "search_path",
+              "path",
+            ]) || filePath,
+          query,
+          ...(query ? { Query: query } : {}),
+          ...(includes.length > 0 ? { includes: [...includes] } : {}),
+          ...(typeof pickFirstBoolean(input, [
+            "IsRegex",
+            "isRegex",
+            "is_regex",
+          ]) === "boolean"
+            ? {
+                isRegex: pickFirstBoolean(input, [
+                  "IsRegex",
+                  "isRegex",
+                  "is_regex",
+                ]),
+              }
+            : {}),
+          ...(typeof pickFirstBoolean(input, [
+            "CaseInsensitive",
+            "caseInsensitive",
+            "case_insensitive",
+            "-i",
+          ]) === "boolean"
+            ? {
+                caseInsensitive: pickFirstBoolean(input, [
+                  "CaseInsensitive",
+                  "caseInsensitive",
+                  "case_insensitive",
+                  "-i",
+                ]),
+              }
+            : {}),
+          ...(typeof matchPerLine === "boolean" ? { matchPerLine } : {}),
+          output_mode:
+            matchPerLine === false ? "files_with_matches" : "content",
+          head_limit:
+            pickFirstNumber(input, ["HeadLimit", "headLimit", "head_limit"]) ??
+            50,
+          offset: pickFirstNumber(input, ["Offset", "offset"]),
+        },
+        historyToolName,
+        historyToolInput,
+      }
+    }
     case "view_file":
       return {
         toolName: "read_file",

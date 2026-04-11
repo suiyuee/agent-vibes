@@ -587,7 +587,31 @@ interface ListDirArgs {
 interface GrepArgs {
   query?: string
   pattern?: string
+  Query?: string
   path?: string
+  SearchPath?: string
+  searchPath?: string
+  search_path?: string
+  glob?: string
+  includes?: string[]
+  Includes?: string[]
+  output_mode?: string
+  outputMode?: string
+  matchPerLine?: boolean
+  match_per_line?: boolean
+  MatchPerLine?: boolean
+  caseInsensitive?: boolean
+  case_insensitive?: boolean
+  CaseInsensitive?: boolean
+  isRegex?: boolean
+  is_regex?: boolean
+  IsRegex?: boolean
+  head_limit?: number
+  headLimit?: number
+  HeadLimit?: number
+  offset?: number
+  Offset?: number
+  type?: string
   case_sensitive?: boolean
 }
 
@@ -2392,6 +2416,129 @@ export class CursorGrpcService {
     }
   }
 
+  private escapeGrepLiteralPattern(value: string): string {
+    return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&")
+  }
+
+  private collapseGrepGlobPatterns(patterns: string[]): string | undefined {
+    const normalized = patterns
+      .map((entry) => safeString(entry).trim())
+      .filter((entry) => entry.length > 0)
+    if (normalized.length === 0) return undefined
+    if (normalized.length === 1) return normalized[0]
+
+    const positive = normalized.filter((entry) => !entry.startsWith("!"))
+    const negative = normalized
+      .filter((entry) => entry.startsWith("!"))
+      .map((entry) => entry.slice(1))
+      .filter((entry) => entry.length > 0)
+
+    if (positive.length > 1) {
+      // agent.v1 GrepArgs currently supports a single glob field, so collapse
+      // multi-include official payloads into a best-effort brace glob.
+      return `{${positive.join(",")}}`
+    }
+    if (positive.length === 1) {
+      return positive[0]
+    }
+    if (negative.length === 1) {
+      return `!${negative[0]}`
+    }
+    return `!{${negative.join(",")}}`
+  }
+
+  private normalizeGrepCallArgs(args: Record<string, unknown>): {
+    pattern: string
+    path: string
+    glob?: string
+    outputMode?: string
+    caseInsensitive?: boolean
+    type?: string
+    headLimit?: number
+    offset?: number
+  } {
+    const hasOfficialShape =
+      "SearchPath" in args ||
+      "Query" in args ||
+      "Includes" in args ||
+      "MatchPerLine" in args ||
+      "CaseInsensitive" in args ||
+      "IsRegex" in args
+
+    const explicitPattern = safeString(args.pattern).trim()
+    const query = safeString(
+      explicitPattern ||
+        args.query ||
+        args.Query ||
+        args.regex ||
+        args.searchTerm ||
+        args.search_term
+    ).trim()
+    const isRegexRaw = args.isRegex ?? args.is_regex ?? args.IsRegex
+    const isRegex =
+      isRegexRaw === undefined ? undefined : this.parseBooleanFlag(isRegexRaw)
+    const pattern =
+      !explicitPattern &&
+      query &&
+      (isRegex === false || (hasOfficialShape && isRegex !== true))
+        ? this.escapeGrepLiteralPattern(query)
+        : query
+    const path = safeString(
+      args.path || args.SearchPath || args.searchPath || args.search_path
+    ).trim()
+    const directGlob = safeString(args.glob).trim()
+    const includes = this.toStringArray(
+      args.includes ?? args.Includes ?? args.include
+    )
+    const glob = directGlob || this.collapseGrepGlobPatterns(includes)
+    const explicitOutputMode = safeString(
+      args.output_mode || args.outputMode
+    ).trim()
+    const matchPerLineRaw =
+      args.matchPerLine ?? args.match_per_line ?? args.MatchPerLine
+    const matchPerLine =
+      matchPerLineRaw === undefined
+        ? undefined
+        : this.parseBooleanFlag(matchPerLineRaw)
+    const outputMode =
+      explicitOutputMode ||
+      (matchPerLine === false
+        ? "files_with_matches"
+        : matchPerLine === true || hasOfficialShape
+          ? "content"
+          : "")
+    const caseInsensitiveRaw =
+      args.caseInsensitive ??
+      args.case_insensitive ??
+      args.CaseInsensitive ??
+      args["-i"]
+    const caseSensitiveRaw =
+      args.case_sensitive ?? args.caseSensitive ?? args.CaseSensitive
+    const caseInsensitive =
+      caseInsensitiveRaw === undefined
+        ? caseSensitiveRaw === undefined
+          ? undefined
+          : !this.parseBooleanFlag(caseSensitiveRaw, true)
+        : this.parseBooleanFlag(caseInsensitiveRaw)
+    const type = safeString(args.type).trim()
+    const headLimit =
+      this.parseOptionalNonNegativeInt(
+        args.head_limit ?? args.headLimit ?? args.HeadLimit
+      ) ?? (hasOfficialShape ? 50 : undefined)
+    const offset = this.parseOptionalNonNegativeInt(args.offset ?? args.Offset)
+
+    return {
+      pattern,
+      path,
+      ...(glob ? { glob } : {}),
+      ...(outputMode ? { outputMode } : {}),
+      ...(caseInsensitive !== undefined ? { caseInsensitive } : {}),
+      ...(type ? { type } : {}),
+      ...(headLimit !== undefined ? { headLimit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
+    }
+  }
+
   private resolveLsPath(args: Record<string, unknown>): string {
     return safeString(
       args.path ||
@@ -3458,12 +3605,18 @@ export class CursorGrpcService {
         }
       }
       case "grep": {
-        const a = args as GrepArgs
+        const a = this.normalizeGrepCallArgs(args as Record<string, unknown>)
         return {
           case: "grepArgs" as const,
           value: create(GrepArgsSchema, {
-            pattern: safeString(a.query || a.pattern),
-            path: safeString(a.path),
+            pattern: a.pattern,
+            path: a.path || undefined,
+            glob: a.glob,
+            outputMode: a.outputMode,
+            caseInsensitive: a.caseInsensitive,
+            type: a.type,
+            headLimit: a.headLimit,
+            offset: a.offset,
             toolCallId,
           }),
         }
@@ -3730,16 +3883,24 @@ export class CursorGrpcService {
           }),
         }
       }
-      case "grep":
+      case "grep": {
+        const normalizedGrepArgs = this.normalizeGrepCallArgs(args)
         return {
           case: "grepToolCall" as const,
           value: create(GrepToolCallSchema, {
             args: create(GrepArgsSchema, {
-              pattern: safeString(args.query || args.pattern),
-              path: safeString(args.path),
+              pattern: normalizedGrepArgs.pattern,
+              path: normalizedGrepArgs.path || undefined,
+              glob: normalizedGrepArgs.glob,
+              outputMode: normalizedGrepArgs.outputMode,
+              caseInsensitive: normalizedGrepArgs.caseInsensitive,
+              type: normalizedGrepArgs.type,
+              headLimit: normalizedGrepArgs.headLimit,
+              offset: normalizedGrepArgs.offset,
             }),
           }),
         }
+      }
       case "read": {
         const normalizedReadArgs = this.normalizeReadToolArgs(args)
         return {
@@ -4772,6 +4933,7 @@ export class CursorGrpcService {
     }
 
     if (family === "grep") {
+      const normalizedGrepArgs = this.normalizeGrepCallArgs(args)
       const grepSuccess = extraData?.grepSuccess
       const grepSuccessRecord =
         grepSuccess && typeof grepSuccess === "object"
@@ -4790,11 +4952,13 @@ export class CursorGrpcService {
         activeEditorResultCandidate
       )
       const pattern = safeString(
-        args.query || args.pattern || args.regex || grepSuccess?.pattern
+        normalizedGrepArgs.pattern || grepSuccess?.pattern
       )
-      const path = safeString(args.path || args.include || grepSuccess?.path)
+      const path = safeString(normalizedGrepArgs.path || grepSuccess?.path)
       const outputMode = safeString(
-        grepSuccessRecord?.outputMode ?? grepSuccessRecord?.output_mode
+        normalizedGrepArgs.outputMode ??
+          grepSuccessRecord?.outputMode ??
+          grepSuccessRecord?.output_mode
       )
       const grepResultOneOf =
         status === "success"
@@ -4820,7 +4984,13 @@ export class CursorGrpcService {
         value: create(GrepToolCallSchema, {
           args: create(GrepArgsSchema, {
             pattern,
-            path,
+            path: path || undefined,
+            glob: normalizedGrepArgs.glob,
+            outputMode: outputMode || undefined,
+            caseInsensitive: normalizedGrepArgs.caseInsensitive,
+            type: normalizedGrepArgs.type,
+            headLimit: normalizedGrepArgs.headLimit,
+            offset: normalizedGrepArgs.offset,
           }),
           result: create(GrepResultSchema, {
             result: grepResultOneOf,

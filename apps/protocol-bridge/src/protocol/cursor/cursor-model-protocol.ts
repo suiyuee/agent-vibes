@@ -1,31 +1,31 @@
 import { create } from "@bufbuild/protobuf"
 import {
+  ModelDetailsSchema,
+  RequestedModel_ModelParameterValueSchema,
+  ThinkingDetailsSchema,
+  type ModelDetails,
+  type RequestedModel_ModelParameterValue,
+} from "../../gen/agent/v1_pb"
+import {
   AvailableModelsResponse_AvailableModelSchema,
   AvailableModelsResponse_ModelVariantConfigSchema,
   CloudAgentEffortMode,
   GetModelLabelsResponse_ModelLabelSchema,
   ModelParameterDefinition_BooleanParameterDefinitionSchema,
-  ModelParameterDefinition_EnumParameterDefinitionSchema,
   ModelParameterDefinition_EnumParameterDefinition_EnumParameterValueSchema,
+  ModelParameterDefinition_EnumParameterDefinitionSchema,
   ModelParameterDefinition_ModelParameterTypeSchema,
   ModelParameterDefinitionSchema,
   type AvailableModelsResponse_AvailableModel,
   type GetModelLabelsResponse_ModelLabel,
 } from "../../gen/aiserver/v1_pb"
 import {
-  ModelDetailsSchema,
-  type RequestedModel_ModelParameterValue,
-  RequestedModel_ModelParameterValueSchema,
-  ThinkingDetailsSchema,
-  type ModelDetails,
-} from "../../gen/agent/v1_pb"
-import { parseModelRequest } from "../../llm/model-request"
-import {
   getCursorDisplayModel,
   resolveCloudCodeModel,
   resolveModelThinkingCapability,
   type CursorDisplayModel,
 } from "../../llm/model-registry"
+import { parseModelRequest } from "../../llm/model-request"
 
 export const CURSOR_REASONING_PARAMETER_ID = "reasoning"
 export const CURSOR_LEGACY_REASONING_PARAMETER_ID = "reasoning_effort"
@@ -655,22 +655,16 @@ function resolveAvailableModelMode(
   parameterDefinitions: ReturnType<typeof buildReasoningParameterDefinition>
   variants: ReturnType<typeof buildVariant>[]
 } {
-  if (model.family !== "gpt") {
-    return {
-      supportsThinking: model.isThinking,
-      supportsMaxMode: false,
-      supportsNonMaxMode: true,
-      parameterDefinitions: [],
-      variants: [],
-    }
-  }
-
   const modelName = model.name
   const maxNamedModel = isExplicitMaxNamedModel(modelName)
   const effortValues = resolveEffortValues(modelName)
   const standardEffort = selectEffortValue(effortValues, STANDARD_EFFORT_ORDER)
   const supportsThinking = effortValues.length > 0
-  const supportsCursorMaxMode = supportsThinking
+  // For models without explicit ThinkingCapability levels (e.g. Claude, Gemini
+  // thinking variants), fall back to the model's isThinking flag so that max
+  // mode can still be enabled.
+  const supportsThinkingOrIsThinking = supportsThinking || model.isThinking
+  const supportsCursorMaxMode = supportsThinkingOrIsThinking
   const supportsFastMode = supportsCursorFastMode(model)
   const parameterDefinitions = [
     ...buildReasoningParameterDefinition(modelName),
@@ -679,7 +673,7 @@ function resolveAvailableModelMode(
   const defaultMaxEffort =
     selectEffortValue(effortValues, STANDARD_EFFORT_ORDER) || standardEffort
 
-  if (!supportsThinking && !supportsFastMode) {
+  if (!supportsThinkingOrIsThinking && !supportsFastMode) {
     return {
       supportsThinking: false,
       supportsMaxMode: false,
@@ -691,10 +685,10 @@ function resolveAvailableModelMode(
 
   if (maxNamedModel) {
     return {
-      supportsThinking,
+      supportsThinking: supportsThinkingOrIsThinking,
       supportsMaxMode: true,
       supportsNonMaxMode: false,
-      cloudAgentEffortMode: supportsThinking
+      cloudAgentEffortMode: supportsThinkingOrIsThinking
         ? CloudAgentEffortMode.GRIND
         : undefined,
       parameterDefinitions,
@@ -707,6 +701,28 @@ function resolveAvailableModelMode(
         standardEffort,
         defaultMaxEffort,
       }),
+    }
+  }
+
+  // For thinking models without explicit effort levels (e.g. Claude Opus
+  // Thinking, Gemini 3.1 Pro High), generate simple max/non-max variants so
+  // that the Cursor UI MAX Mode toggle is enabled.
+  if (!supportsThinking && model.isThinking) {
+    const simpleVariants = buildReasoningVariants(model, [], {
+      maxNamedModel: false,
+      supportsCursorMaxMode: true,
+      supportsCursorFastMode: supportsFastMode,
+      includeEffortInDisplayName: options?.includeEffortInDisplayName === true,
+      standardEffort: null,
+      defaultMaxEffort: null,
+    })
+
+    return {
+      supportsThinking: true,
+      supportsMaxMode: true,
+      supportsNonMaxMode: true,
+      parameterDefinitions,
+      variants: simpleVariants,
     }
   }
 

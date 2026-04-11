@@ -23,11 +23,11 @@ import {
 } from "../native/process-pool.service"
 import { UpstreamRequestAbortedError } from "../shared/abort-signal"
 import { BackendApiError } from "../shared/backend-errors"
+import { resolveThinkingIntentFromDto } from "../thinking-intent"
 import { findPendingToolUseIdsInMessages } from "../tool-continuation-policy"
 import { ANTIGRAVITY_SYSTEM_PROMPT } from "./antigravity-system-prompt"
-import { ToolThoughtSignatureService } from "./tool-thought-signature.service"
 import { GoogleModelCacheService } from "./google-model-cache.service"
-import { resolveThinkingIntentFromDto } from "../thinking-intent"
+import { ToolThoughtSignatureService } from "./tool-thought-signature.service"
 
 class FatalCloudCodeRequestError extends Error {
   constructor(message: string) {
@@ -1122,6 +1122,7 @@ export class GoogleService {
   ): {
     contents: Array<Record<string, unknown>>
     removedFunctionResponses: number
+    removedInvalidThoughtParts: number
     droppedMessages: number
   } {
     const normalized = this.stripPromptShrinkMetadata(
@@ -1131,6 +1132,7 @@ export class GoogleService {
     return {
       contents: normalized.contents,
       removedFunctionResponses: normalized.removedFunctionResponses,
+      removedInvalidThoughtParts: normalized.removedInvalidThoughtParts,
       droppedMessages: Math.max(
         0,
         contents.length - normalized.contents.length
@@ -1141,8 +1143,10 @@ export class GoogleService {
   private stripPromptShrinkMetadata(contents: Array<Record<string, unknown>>): {
     contents: Array<Record<string, unknown>>
     removedFunctionResponses: number
+    removedInvalidThoughtParts: number
   } {
     let removedFunctionResponses = 0
+    let removedInvalidThoughtParts = 0
 
     for (const msg of contents) {
       if (!msg || typeof msg !== "object") continue
@@ -1153,11 +1157,84 @@ export class GoogleService {
       }
       delete (msg as { __removedFunctionResponses?: number })
         .__removedFunctionResponses
+
+      const removedThoughts = (msg as { __removedInvalidThoughtParts?: number })
+        .__removedInvalidThoughtParts
+      if (typeof removedThoughts === "number" && removedThoughts > 0) {
+        removedInvalidThoughtParts += removedThoughts
+      }
+      delete (msg as { __removedInvalidThoughtParts?: number })
+        .__removedInvalidThoughtParts
     }
 
     return {
       contents,
       removedFunctionResponses,
+      removedInvalidThoughtParts,
+    }
+  }
+
+  private sanitizeCloudCodeThoughtParts(
+    parts: Array<Record<string, unknown>>
+  ): {
+    parts: Array<Record<string, unknown>>
+    removedInvalidThoughtParts: number
+  } {
+    if (!Array.isArray(parts) || parts.length === 0) {
+      return {
+        parts: [],
+        removedInvalidThoughtParts: 0,
+      }
+    }
+
+    const sanitized: Array<Record<string, unknown>> = []
+    const pendingThoughtIndexes: number[] = []
+    let removedInvalidThoughtParts = 0
+
+    const dropPendingThoughts = () => {
+      while (pendingThoughtIndexes.length > 0) {
+        const index = pendingThoughtIndexes.pop()!
+        sanitized.splice(index, 1)
+        removedInvalidThoughtParts++
+      }
+    }
+
+    for (const rawPart of parts) {
+      if (!rawPart || typeof rawPart !== "object") continue
+      const part = { ...rawPart }
+      const isThoughtPart =
+        part.thought === true &&
+        typeof part.text === "string" &&
+        part.text.length > 0
+
+      if (isThoughtPart) {
+        pendingThoughtIndexes.push(sanitized.length)
+        sanitized.push(part)
+        continue
+      }
+
+      const hasThoughtSignature =
+        typeof part.thoughtSignature === "string" &&
+        part.thoughtSignature.trim().length > 0
+
+      if (pendingThoughtIndexes.length > 0) {
+        if (hasThoughtSignature) {
+          pendingThoughtIndexes.length = 0
+        } else {
+          dropPendingThoughts()
+        }
+      }
+
+      sanitized.push(part)
+    }
+
+    if (pendingThoughtIndexes.length > 0) {
+      dropPendingThoughts()
+    }
+
+    return {
+      parts: sanitized,
+      removedInvalidThoughtParts,
     }
   }
 
@@ -1205,6 +1282,14 @@ export class GoogleService {
 
       let filteredParts = parts
       let removedFunctionResponses = 0
+      let removedInvalidThoughtParts = 0
+
+      if (role === "model") {
+        const sanitizedThoughts = this.sanitizeCloudCodeThoughtParts(parts)
+        filteredParts = sanitizedThoughts.parts
+        removedInvalidThoughtParts =
+          sanitizedThoughts.removedInvalidThoughtParts
+      }
 
       if (role === "user") {
         const previous = normalized[normalized.length - 1]
@@ -1243,6 +1328,9 @@ export class GoogleService {
       }
       if (removedFunctionResponses > 0) {
         clonedMessage.__removedFunctionResponses = removedFunctionResponses
+      }
+      if (removedInvalidThoughtParts > 0) {
+        clonedMessage.__removedInvalidThoughtParts = removedInvalidThoughtParts
       }
 
       normalized.push(clonedMessage)
@@ -2411,10 +2499,6 @@ export class GoogleService {
     explicitBudget: number | undefined,
     requestedEffort: string | undefined
   ): number {
-    if (model.startsWith("claude-")) {
-      return 1024
-    }
-
     const profile = this.getOfficialThinkingProfile(model)
     const normalizedEffort = requestedEffort?.trim().toLowerCase()
     const minBudget =
@@ -2435,17 +2519,107 @@ export class GoogleService {
       return minBudget || defaultBudget || 1024
     }
 
-    if (
-      normalizedEffort === "medium" ||
-      normalizedEffort === "high" ||
-      normalizedEffort === "xhigh" ||
-      normalizedEffort === "max" ||
-      normalizedEffort === "auto"
-    ) {
+    // Effort-based budget tiers for Claude on Cloud Code.
+    // References:
+    //   Vertex AI migration guide: LOW ≤1,024; MEDIUM 1,024–8,192; HIGH >8,192
+    //   Anthropic legacy guidance: simple 1–2k; moderate 4–8k; complex 20–50k+
+    //   Cloud Code official: gpt-oss-120b-medium=8,192; gemini-3.1-pro-high=10,001
+    if (normalizedEffort === "max" || normalizedEffort === "xhigh") {
+      return 32768
+    }
+
+    if (normalizedEffort === "high") {
+      return 8192
+    }
+
+    if (normalizedEffort === "medium" || normalizedEffort === "auto") {
       return defaultBudget || minBudget || 1024
     }
 
     return defaultBudget || minBudget || 1024
+  }
+
+  /**
+   * Estimate task complexity from request signals to auto-derive
+   * Cloud Code thinkingBudget when no explicit effort is set.
+   * Returns an effort string ("high") or undefined (use default).
+   * Capped at "high" — only MAX Mode can trigger "max".
+   */
+  private estimateClaudeTaskComplexity(
+    dto: CreateMessageDto
+  ): string | undefined {
+    // Only run auto-estimation when explicitly enabled via dashboard setting
+    if (process.env.THINKING_BUDGET_AUTO !== "true") {
+      return undefined
+    }
+
+    let score = 0
+
+    // Signal 1: Conversation depth
+    const messageCount = dto.messages?.length || 0
+    if (messageCount >= 10) {
+      score += 2
+    } else if (messageCount >= 4) {
+      score += 1
+    }
+
+    // Signal 2: Tool availability (agentic scenario)
+    const toolCount = dto.tools?.length || 0
+    if (toolCount >= 5) {
+      score += 2
+    } else if (toolCount >= 1) {
+      score += 1
+    }
+
+    // Signal 3: Last user message length
+    const lastUserMsg = [...(dto.messages || [])]
+      .reverse()
+      .find((m) => m.role === "user")
+    const lastMsgText =
+      typeof lastUserMsg?.content === "string"
+        ? lastUserMsg.content
+        : Array.isArray(lastUserMsg?.content)
+          ? lastUserMsg.content
+              .map((c) => (typeof c === "object" && c.text ? c.text : ""))
+              .join("")
+          : ""
+    if (lastMsgText.length > 2000) {
+      score += 2
+    } else if (lastMsgText.length > 500) {
+      score += 1
+    }
+
+    // Signal 4: Complexity keywords in last user message
+    const complexityKeywords =
+      /\b(refactor|architect|review|debug|fix|migration|redesign|optimize|complex|multi.?file|重构|架构|审查|调试|优化|迁移)\b/i
+    if (complexityKeywords.test(lastMsgText)) {
+      score += 2
+    }
+
+    // Signal 5: Tool results present (multi-step agentic workflow)
+    const hasToolResults = dto.messages?.some((m) => {
+      if (typeof m.content === "string") return false
+      return Array.isArray(m.content)
+        ? m.content.some(
+            (c) =>
+              typeof c === "object" &&
+              (c.type === "tool_result" || c.type === "tool_use")
+          )
+        : false
+    })
+    if (hasToolResults) {
+      score += 1
+    }
+
+    // Score → effort mapping (capped at "high", max is MAX-Mode-only)
+    if (score >= 3) {
+      this.logger.debug(
+        `Claude task complexity auto-estimate: score=${score} → high (messages=${messageCount}, tools=${toolCount}, msgLen=${lastMsgText.length})`
+      )
+      return "high"
+    }
+
+    return undefined
   }
 
   private buildClaudeThinkingConfig(
@@ -2466,10 +2640,11 @@ export class GoogleService {
     // thinkingDetails. Keep that default at the Cloud Code serialization layer
     // so non-Claude/non-thinking routes remain controlled by the parsed request.
     if (!thinkingIntent && resolvedModel.includes("thinking")) {
+      const autoEffort = this.estimateClaudeTaskComplexity(dto)
       const thinkingBudget = this.resolveCloudCodeThinkingBudget(
         resolvedModel,
         undefined,
-        undefined
+        autoEffort
       )
       return {
         includeThoughts: true,
@@ -2494,7 +2669,10 @@ export class GoogleService {
     }
 
     if (thinkingIntent.mode === "adaptive") {
-      const effort = thinkingIntent.effort
+      // Use explicit effort if set (e.g. MAX Mode → "max"),
+      // otherwise auto-estimate from request signals.
+      const effort =
+        thinkingIntent.effort || this.estimateClaudeTaskComplexity(dto)
       const thinkingBudget = this.resolveCloudCodeThinkingBudget(
         resolvedModel,
         undefined,
@@ -2502,7 +2680,7 @@ export class GoogleService {
       )
       if (effort) {
         this.logger.debug(
-          `Normalizing Cloud Code adaptive thinking effort ${effort} to budget ${thinkingBudget} for ${resolvedModel}`
+          `Cloud Code adaptive thinking: effort=${effort} (${thinkingIntent.effort ? "explicit" : "auto-estimated"}) → budget=${thinkingBudget} for ${resolvedModel}`
         )
       }
       return {
@@ -3612,11 +3790,13 @@ export class GoogleService {
       const sanitized = this.sanitizeClaudeContentsForSend(requestContents)
       googleRequest.contents = sanitized.contents
       if (
+        sanitized.removedInvalidThoughtParts > 0 ||
         sanitized.removedFunctionResponses > 0 ||
         sanitized.droppedMessages > 0
       ) {
         this.logger.warn(
           `Cloud Code final payload sanitize: dropped ${sanitized.removedFunctionResponses} orphan functionResponse part(s), ` +
+            `removed ${sanitized.removedInvalidThoughtParts} invalid thought part(s), ` +
             `removed ${sanitized.droppedMessages} invalid message(s)`
         )
       }

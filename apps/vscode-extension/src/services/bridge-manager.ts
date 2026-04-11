@@ -1,15 +1,15 @@
-import * as vscode from "vscode"
 import { ChildProcess, spawn } from "child_process"
-import * as path from "path"
-import * as fs from "fs"
-import * as os from "os"
-import * as https from "https"
 import { EventEmitter } from "events"
-import { logger } from "../utils/logger"
-import { getPlatformTarget, getExeExtension } from "../utils/platform"
-import { ConfigManager } from "./config-manager"
+import * as fs from "fs"
+import * as https from "https"
+import * as os from "os"
+import * as path from "path"
+import * as vscode from "vscode"
 import type { ServerState } from "../constants"
 import { CTX_SERVER_RUNNING } from "../constants"
+import { logger } from "../utils/logger"
+import { getExeExtension, getPlatformTarget } from "../utils/platform"
+import { ConfigManager } from "./config-manager"
 
 const PID_FILE = path.join(os.tmpdir(), "agent-vibes-bridge.pid")
 const LOG_FILE = path.join(os.tmpdir(), "agent-vibes-bridge.log")
@@ -114,6 +114,10 @@ export class BridgeManager extends EventEmitter {
 
       if (this.config.debugMode) {
         env.LOG_DEBUG = "true"
+      }
+
+      if (this.config.thinkingBudgetAuto) {
+        env.THINKING_BUDGET_AUTO = "true"
       }
 
       this.rotateLogFile()

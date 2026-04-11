@@ -217,6 +217,11 @@
           "default": false,
           "description": "Enable debug logging"
         },
+        "agentVibes.thinkingBudgetAuto": {
+          "type": "boolean",
+          "default": false,
+          "description": "Auto-estimate Cloud Code Claude thinking budget based on task complexity"
+        },
         "agentVibes.dataDir": {
           "type": "string",
           "default": "",

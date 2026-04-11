@@ -593,6 +593,7 @@ export class CursorConnectStreamService {
   private readonly LARGE_TOOL_RESULT_HEAD_LINES = 220
   private readonly LARGE_TOOL_RESULT_TAIL_LINES = 120
   private readonly LARGE_TOOL_RESULT_SAMPLE_MAX_CHARS = 24_000
+  private readonly GREP_RESULT_PREVIEW_MAX_LINES = 120
   private readonly TOP_LEVEL_AGENT_MAX_READONLY_TURNS = 18
   private readonly TOP_LEVEL_AGENT_SUMMARY_MEMORY_LIMIT = 8
   private readonly TOOL_BATCH_SUMMARY_DETAILS_LIMIT = 6
@@ -3699,15 +3700,28 @@ ${raw}
 
     const targetFile =
       typeof toolInput.TargetFile === "string" ? toolInput.TargetFile : ""
+    const pathCandidates = [
+      toolInput.path,
+      toolInput.SearchPath,
+      toolInput.searchPath,
+      toolInput.search_path,
+      toolInput.AbsolutePath,
+      toolInput.absolutePath,
+      toolInput.absolute_path,
+      toolInput.DirectoryPath,
+      toolInput.directoryPath,
+      toolInput.directory_path,
+    ]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
     const target =
-      typeof toolInput.path === "string" && toolInput.path.length > 0
-        ? toolInput.path
-        : targetFile.length > 0
-          ? targetFile
-          : typeof toolInput.command === "string" &&
-              toolInput.command.length > 0
-            ? `command: ${toolInput.command.slice(0, 180)}`
-            : "(unknown path)"
+      pathCandidates[0] ||
+      (targetFile.length > 0
+        ? targetFile
+        : typeof toolInput.command === "string" && toolInput.command.length > 0
+          ? `command: ${toolInput.command.slice(0, 180)}`
+          : "(unknown path)")
     const lines = content.split(/\r?\n/)
     const totalLines = lines.length
 
@@ -10834,17 +10848,40 @@ ${raw}
     input: Record<string, unknown> | undefined
   ): string | null {
     if (!input) return null
-    const candidate = input.path
-    return typeof candidate === "string" && candidate.trim().length > 0
-      ? candidate.trim()
-      : null
+    const candidates = [
+      input.path,
+      input.SearchPath,
+      input.searchPath,
+      input.search_path,
+      input.AbsolutePath,
+      input.absolutePath,
+      input.absolute_path,
+      input.DirectoryPath,
+      input.directoryPath,
+      input.directory_path,
+      input.TargetFile,
+      input.targetFile,
+      input.target_file,
+    ]
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) {
+        return candidate.trim()
+      }
+    }
+    return null
   }
 
   private pickToolQuery(
     input: Record<string, unknown> | undefined
   ): string | null {
     if (!input) return null
-    const candidates = [input.query, input.pattern, input.searchTerm]
+    const candidates = [
+      input.query,
+      input.Query,
+      input.pattern,
+      input.searchTerm,
+      input.search_term,
+    ]
     for (const candidate of candidates) {
       if (typeof candidate === "string" && candidate.trim().length > 0) {
         return candidate.trim()
@@ -15105,6 +15142,14 @@ ${raw}
       // GrepSuccess 有 workspaceResults map<string, GrepUnionResult>
       if (v.workspaceResults) {
         const lines: string[] = []
+        let omittedLines = 0
+        const appendPreviewLine = (line: string) => {
+          if (lines.length < this.GREP_RESULT_PREVIEW_MAX_LINES) {
+            lines.push(line)
+            return
+          }
+          omittedLines++
+        }
         for (const [_workspace, unionResult] of Object.entries(
           v.workspaceResults
         )) {
@@ -15120,7 +15165,7 @@ ${raw}
                 if (fileMatch.matches) {
                   for (const m of fileMatch.matches) {
                     if (!m.isContextLine) {
-                      lines.push(
+                      appendPreviewLine(
                         `${fileMatch.file}:${m.lineNumber}:${m.content}`
                       )
                     }
@@ -15129,32 +15174,42 @@ ${raw}
               }
             }
             if (contentResult.totalMatchedLines) {
-              lines.push(
-                `\n(${contentResult.totalMatchedLines} total matched lines)`
+              appendPreviewLine(
+                `(${contentResult.totalMatchedLines} total matched lines)`
               )
             }
           } else if (ur.result.case === "files") {
             // GrepFilesResult { files: string[] }
             const filesResult = ur.result.value
             if (filesResult.files) {
-              lines.push(...filesResult.files)
+              for (const file of filesResult.files) {
+                appendPreviewLine(file)
+              }
             }
             if (filesResult.totalFiles) {
-              lines.push(`\n(${filesResult.totalFiles} total files)`)
+              appendPreviewLine(`(${filesResult.totalFiles} total files)`)
             }
           } else if (ur.result.case === "count") {
             // GrepCountResult { counts: GrepFileCount[] }
             const countResult = ur.result.value
             if (countResult.counts) {
               for (const c of countResult.counts) {
-                lines.push(`${c.file}: ${c.count} matches`)
+                appendPreviewLine(`${c.file}: ${c.count} matches`)
               }
             }
             if (countResult.totalMatches) {
-              lines.push(
-                `\n(${countResult.totalMatches} total matches in ${countResult.totalFiles} files)`
+              appendPreviewLine(
+                `(${countResult.totalMatches} total matches in ${countResult.totalFiles} files)`
               )
             }
+          }
+        }
+        if (omittedLines > 0) {
+          const note = `(... ${omittedLines} additional grep output lines omitted from preview)`
+          if (lines.length >= this.GREP_RESULT_PREVIEW_MAX_LINES) {
+            lines[this.GREP_RESULT_PREVIEW_MAX_LINES - 1] = note
+          } else {
+            lines.push(note)
           }
         }
         if (lines.length > 0) return lines.join("\n")

@@ -1,6 +1,6 @@
-import * as vscode from "vscode"
-import * as path from "path"
 import * as fs from "fs"
+import * as path from "path"
+import * as vscode from "vscode"
 import { ensureDir, getDefaultDataDir } from "../utils/platform"
 
 /**
@@ -70,6 +70,14 @@ export class ConfigManager {
       vscode.workspace
         .getConfiguration("agentVibes")
         .get<boolean>("debugMode") ?? false
+    )
+  }
+
+  get thinkingBudgetAuto(): boolean {
+    return (
+      vscode.workspace
+        .getConfiguration("agentVibes")
+        .get<boolean>("thinkingBudgetAuto") ?? false
     )
   }
 

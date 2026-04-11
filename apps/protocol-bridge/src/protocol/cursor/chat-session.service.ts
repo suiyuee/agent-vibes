@@ -30,6 +30,103 @@ export interface SessionMessage {
   content: MessageContent
 }
 
+function sanitizeAssistantContentForStorage(content: MessageContent): {
+  content: MessageContent | null
+  removedThinkingBlocks: number
+} {
+  if (typeof content === "string") {
+    return { content, removedThinkingBlocks: 0 }
+  }
+
+  if (!Array.isArray(content)) {
+    return { content, removedThinkingBlocks: 0 }
+  }
+
+  const blocks = content.flatMap((block) =>
+    block && typeof block === "object" ? [{ ...block }] : []
+  )
+
+  if (blocks.length === 0) {
+    return { content: null, removedThinkingBlocks: 0 }
+  }
+
+  const hasNonThinkingContent = blocks.some((block) => {
+    const type = block.type
+    return type !== "thinking" && type !== "redacted_thinking"
+  })
+
+  let removedThinkingBlocks = 0
+  const sanitized = blocks.filter((block) => {
+    if (block.type === "thinking") {
+      if (!hasNonThinkingContent) {
+        removedThinkingBlocks++
+        return false
+      }
+
+      const signature =
+        typeof block.signature === "string" ? block.signature.trim() : ""
+      if (!signature) {
+        removedThinkingBlocks++
+        return false
+      }
+
+      return true
+    }
+
+    if (block.type === "redacted_thinking" && !hasNonThinkingContent) {
+      removedThinkingBlocks++
+      return false
+    }
+
+    return true
+  })
+
+  if (sanitized.length === 0) {
+    return { content: null, removedThinkingBlocks }
+  }
+
+  return {
+    content: sanitized as MessageContent,
+    removedThinkingBlocks,
+  }
+}
+
+function sanitizeMessagesForStorage(messages: SessionMessage[]): {
+  messages: SessionMessage[]
+  removedThinkingBlocks: number
+  droppedMessages: number
+} {
+  const sanitizedMessages: SessionMessage[] = []
+  let removedThinkingBlocks = 0
+  let droppedMessages = 0
+
+  for (const message of messages) {
+    if (message.role !== "assistant") {
+      sanitizedMessages.push(message)
+      continue
+    }
+
+    const sanitized = sanitizeAssistantContentForStorage(message.content)
+    removedThinkingBlocks += sanitized.removedThinkingBlocks
+
+    if (sanitized.content == null) {
+      droppedMessages++
+      continue
+    }
+
+    sanitizedMessages.push({
+      ...message,
+      content: sanitized.content,
+    })
+  }
+
+  return {
+    messages: sanitizedMessages,
+    removedThinkingBlocks,
+    droppedMessages,
+  }
+}
+
 function buildUserMessageContent(
   text: string,
   images?: ParsedCursorRequest["attachedImages"]
@@ -1987,7 +2084,27 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
     const session = this.getSession(conversationId)
     if (!session) return undefined
 
-    const message = { role, content } satisfies SessionMessage
+    let normalizedContent = content
+    if (role === "assistant") {
+      const sanitized = sanitizeAssistantContentForStorage(content)
+      if (sanitized.removedThinkingBlocks > 0) {
+        this.logger.warn(
+          `Write-time assistant sanitize (addMessage): removed ${sanitized.removedThinkingBlocks} invalid thinking block(s)`
+        )
+      }
+      if (sanitized.content == null) {
+        this.logger.warn(
+          `Write-time assistant sanitize (addMessage): dropped empty assistant message for ${conversationId}`
+        )
+        return undefined
+      }
+      normalizedContent = sanitized.content
+    }
+
+    const message = {
+      role,
+      content: normalizedContent,
+    } satisfies SessionMessage
     session.messages.push(message)
     const record = this.createTranscriptRecord(message)
     session.messageRecords.push(record)
@@ -2002,7 +2119,9 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
 
     // Estimate token usage (rough estimate: 1 token ≈ 4 characters)
     const contentStr =
-      typeof content === "string" ? content : JSON.stringify(content)
+      typeof normalizedContent === "string"
+        ? normalizedContent
+        : JSON.stringify(normalizedContent)
     session.usedTokens += Math.ceil(contentStr.length / 4)
     this.schedulePersist(conversationId)
     return record.id
@@ -3267,11 +3386,25 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
     const session = this.getSession(conversationId)
     if (!session) return
 
+    const sanitizedMessages = sanitizeMessagesForStorage(messages)
+    if (
+      sanitizedMessages.removedThinkingBlocks > 0 ||
+      sanitizedMessages.droppedMessages > 0
+    ) {
+      this.logger.warn(
+        `Write-time assistant sanitize (replaceMessages): removed ${sanitizedMessages.removedThinkingBlocks} invalid thinking block(s), ` +
+          `dropped ${sanitizedMessages.droppedMessages} empty assistant message(s)`
+      )
+    }
+
     const pendingToolUseIds = Array.from(session.pendingToolCalls.keys())
 
     // Write-time validation: enforce tool protocol integrity before storing
     const guardResult = enforceToolProtocol(
-      messages as Array<{ role: "user" | "assistant"; content: unknown }>,
+      sanitizedMessages.messages as Array<{
+        role: "user" | "assistant"
+        content: unknown
+      }>,
       {
         mode: "global",
         pendingToolUseIds,

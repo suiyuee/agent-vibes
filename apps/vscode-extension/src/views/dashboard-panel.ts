@@ -1,17 +1,17 @@
-import * as vscode from "vscode"
-import * as fs from "fs"
-import * as path from "path"
-import * as net from "net"
-import * as tls from "tls"
 import { X509Certificate } from "crypto"
-import { ConfigManager } from "../services/config-manager"
+import * as fs from "fs"
+import * as net from "net"
+import * as path from "path"
+import * as tls from "tls"
+import * as vscode from "vscode"
+import { CMD, CURSOR_DOMAINS } from "../constants"
 import { BridgeManager } from "../services/bridge-manager"
+import { startCodexOAuthFlow } from "../services/codex-oauth-service"
+import { ConfigManager } from "../services/config-manager"
 import { NetworkManager } from "../services/network-manager"
 import { startOAuthFlow } from "../services/oauth-service"
-import { startCodexOAuthFlow } from "../services/codex-oauth-service"
-import { CMD, CURSOR_DOMAINS } from "../constants"
-import { logger } from "../utils/logger"
 import { detectCurrentCursorVersion } from "../utils/cursor-version"
+import { logger } from "../utils/logger"
 
 type AccountChannel = "antigravity" | "claude-api" | "codex" | "openai-compat"
 
@@ -566,7 +566,11 @@ export class DashboardPanel {
     key: string,
     value: unknown
   ): Promise<void> {
-    const allowedBooleans = new Set(["debugMode", "autoStart"])
+    const allowedBooleans = new Set([
+      "debugMode",
+      "autoStart",
+      "thinkingBudgetAuto",
+    ])
     const allowedNumbers = new Set(["port", "healthCheckInterval"])
     const allowedStrings = new Set([
       "language",
@@ -790,6 +794,13 @@ export class DashboardPanel {
                 type: "number",
                 key: "healthCheckInterval",
                 value: this.config.healthCheckInterval,
+              },
+              {
+                label: "Thinking Budget Auto",
+                desc: "Auto-estimate Claude thinking budget based on task complexity (requires restart)",
+                type: "toggle",
+                key: "thinkingBudgetAuto",
+                value: this.config.thinkingBudgetAuto,
               },
             ],
           },

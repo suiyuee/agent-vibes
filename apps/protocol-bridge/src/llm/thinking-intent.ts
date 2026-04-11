@@ -119,10 +119,15 @@ export function buildThinkingIntentFromCursorRequest(params: {
   }
 
   if (modelPrefersAdaptiveThinking(params.model)) {
-    if (!normalizedEffort || normalizedEffort === "auto") {
-      return { mode: "adaptive" }
+    if (normalizedEffort && normalizedEffort !== "auto") {
+      return { mode: "adaptive", effort: normalizedEffort }
     }
-    return { mode: "adaptive", effort: normalizedEffort }
+    // Only MAX Mode (thinkingLevel >= 2) elevates thinking depth.
+    // Normal thinking (level 1) uses the same default budget as level 0.
+    if (params.thinkingLevel >= 2) {
+      return { mode: "adaptive", effort: "max" }
+    }
+    return { mode: "adaptive" }
   }
 
   if (normalizedEffort && normalizedEffort !== "auto") {
