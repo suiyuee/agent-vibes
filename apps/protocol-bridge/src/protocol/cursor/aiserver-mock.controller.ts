@@ -633,7 +633,7 @@ export class AiserverMockController {
                 this.getNamedModelSectionIndex(model.family),
                 {
                   parameterized: true,
-                  defaultOn: true,
+                  defaultOn: model.name !== "gpt-5.4",
                   includeEffortInDisplayName:
                     request.variantsWillBeShownInExplodedList,
                 }

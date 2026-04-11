@@ -237,6 +237,12 @@ export class DashboardPanel {
         }
         break
 
+      case "activateCodexCli":
+        if (msg.index !== undefined) {
+          this.activateCodexCliAccount(msg.index)
+        }
+        break
+
       case "openAccountFile":
         if (msg.channel) {
           await this.openAccountFile(msg.channel)
@@ -1637,6 +1643,86 @@ export class DashboardPanel {
     }
 
     this.config.writeAccounts(filePath, nextAccounts)
+  }
+
+  /**
+   * Write the selected Codex account's tokens into ~/.codex/auth.json
+   * so that the official Codex CLI picks up this identity.
+   */
+  private activateCodexCliAccount(accountIndex: number): void {
+    const accounts = this.config.readAccounts(this.config.codexAccountsPath)
+    const account = accounts[accountIndex]
+    if (!account) {
+      void vscode.window.showWarningMessage(
+        `Codex CLI: invalid account index ${accountIndex}`
+      )
+      return
+    }
+
+    const idToken = String(account.idToken || account.id_token || "")
+    const accessToken = String(
+      account.accessToken || account.access_token || ""
+    )
+    const refreshToken = String(
+      account.refreshToken || account.refresh_token || ""
+    )
+    const accountId = String(account.accountId || account.account_id || "")
+    const email = String(account.email || "")
+
+    if (!refreshToken) {
+      void vscode.window.showWarningMessage(
+        "Codex CLI: this account has no refresh token and cannot be activated."
+      )
+      return
+    }
+
+    const codexDir = path.join(
+      process.env.HOME || process.env.USERPROFILE || "~",
+      ".codex"
+    )
+    const authFilePath = path.join(codexDir, "auth.json")
+
+    const authPayload = {
+      auth_mode: "chatgpt",
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: idToken || null,
+        access_token: accessToken || null,
+        refresh_token: refreshToken,
+        account_id: accountId || null,
+      },
+      last_refresh: new Date().toISOString(),
+    }
+
+    try {
+      if (!fs.existsSync(codexDir)) {
+        fs.mkdirSync(codexDir, { recursive: true, mode: 0o700 })
+      }
+
+      // Back up existing auth.json
+      if (fs.existsSync(authFilePath)) {
+        const backupPath = authFilePath + ".bak"
+        fs.copyFileSync(authFilePath, backupPath)
+      }
+
+      fs.writeFileSync(
+        authFilePath,
+        JSON.stringify(authPayload, null, 2) + "\n",
+        { mode: 0o600 }
+      )
+
+      const label = email || accountId || "unknown"
+      logger.info(`Codex CLI activated for ${label}`)
+      void vscode.window.showInformationMessage(
+        `Codex CLI: switched to ${label}`
+      )
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err)
+      logger.error("Failed to write Codex CLI auth file", err)
+      void vscode.window.showErrorMessage(
+        `Codex CLI activation failed: ${errMsg}`
+      )
+    }
   }
 
   private getChannelData(channel: AccountChannel): DashboardAccountChannelData {

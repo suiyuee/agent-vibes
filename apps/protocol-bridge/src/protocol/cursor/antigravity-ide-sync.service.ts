@@ -220,11 +220,11 @@ export class AntigravityIdeSyncService {
 
       const email = emailMatch[0].trim().toLowerCase()
       const prefix = candidate.slice(0, emailMatch.index ?? 0)
-      const rawName = prefix
+      const nameParts = prefix
         .split(":")
         .map((value) => value.trim())
         .filter(Boolean)
-        .at(-1)
+      const rawName = nameParts[nameParts.length - 1]
       const sanitizedName = rawName
         ? rawName.replace(/[^\p{L}\p{N} ._'’-]/gu, "").trim()
         : ""

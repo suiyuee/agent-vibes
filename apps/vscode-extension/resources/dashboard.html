@@ -606,7 +606,7 @@
         <div class="section-head">
           <span class="section-title">Accounts</span>
           <div style="display:flex;gap:var(--sp-2);align-items:center">
-            <button class="btn btn-ghost" onclick="refreshPoolStatus(true)" title="Refresh Status">Refresh</button>
+            <button id="accounts-refresh-btn" class="btn btn-ghost" onclick="refreshPoolStatus(true)" title="Refresh Status">Refresh</button>
           </div>
         </div>
         <div id="pool-summary" style="margin-bottom:var(--sp-4)"></div>
@@ -1529,6 +1529,9 @@
           if (selectedChannel === 'openai-compat' || selectedChannel === 'claude-api') {
             h += '<button class="btn btn-secondary account-action-btn" onclick="editAcct(\'' + selectedChannel + '\',' + i + ')">Edit</button>';
           }
+          if (selectedChannel === 'codex') {
+            h += '<button class="btn btn-secondary account-action-btn" onclick="activateCodexCli(' + i + ')" title="Switch Codex CLI to this account">CLI</button>';
+          }
           h += '<button class="btn btn-danger account-action-btn" onclick="rmAcct(\'' + selectedChannel + '\',' + i + ')">Remove</button>';
           h += '</div>';
           h += '</div>';
@@ -1971,6 +1974,7 @@
 
     function editAcct(ch, i) { openDlg(ch, 'edit', i); }
     function rmAcct(ch, i) { vscode.postMessage({ type: 'removeAccount', channel: ch, index: i }); }
+    function activateCodexCli(i) { vscode.postMessage({ type: 'activateCodexCli', index: i }); }
     function runCmd(cmd) { vscode.postMessage({ type: 'runCommand', command: cmd }); }
     function runCmdWithLoading(btn, cmd) {
       if (getPendingCommand()) return;
@@ -2128,6 +2132,9 @@
     }
 
     function refreshPoolStatus(forceCodexQuota) {
+      var btn = document.getElementById('accounts-refresh-btn');
+      if (btn) { btn.disabled = true; btn.textContent = 'Refreshing...'; }
+      vscode.postMessage({ type: 'getAll' });
       vscode.postMessage({ type: 'getPoolStatus' });
       vscode.postMessage({ type: 'getGoogleQuota' });
       refreshCodexQuota(!!forceCodexQuota);
@@ -2636,6 +2643,8 @@
 
     function renderPoolStatus(data) {
       poolData = data;
+      var refreshBtn = document.getElementById('accounts-refresh-btn');
+      if (refreshBtn) { refreshBtn.disabled = false; refreshBtn.textContent = 'Refresh'; }
       var summaryEl = document.getElementById('pool-summary');
       if (!data || !data.backends) {
         summaryEl.innerHTML = '<span style="color:var(--fg-2);font-size:var(--text-sm)">Bridge not running — click Refresh Status when online</span>';

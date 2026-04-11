@@ -920,6 +920,7 @@ export class CursorGrpcService {
     "list_mcp_resources",
     "read_lints",
     "fetch",
+    "generate_image",
     "record_screen",
     "computer_use",
     "write_shell_stdin",
@@ -945,7 +946,6 @@ export class CursorGrpcService {
       "web_search",
       "exa_search",
       "exa_fetch",
-      "generate_image",
       "task",
       "ask_question",
       "switch_mode",
@@ -3439,24 +3439,12 @@ export class CursorGrpcService {
         }
       }
       case "shell": {
-        const a = args as ShellArgs
-        const command = safeString(a.command)
-        const parsed = buildShellParsingMetadata(command)
         return {
           case: "shellStreamArgs" as const,
-          value: create(ShellArgsSchema, {
-            command,
-            workingDirectory: safeString(
-              a.cwd || a.working_directory || a.workingDirectory
-            ),
-            timeout: normalizeShellTimeoutMs(a.timeout),
+          value: this.buildShellArgsMessage(
             toolCallId,
-            simpleCommands: parsed.simpleCommands,
-            hasInputRedirect: parsed.hasInputRedirect,
-            hasOutputRedirect: parsed.hasOutputRedirect,
-            parsingResult: parsed.parsingResult,
-            skipApproval: true,
-          }),
+            args as Record<string, unknown>
+          ),
         }
       }
       case "ls": {

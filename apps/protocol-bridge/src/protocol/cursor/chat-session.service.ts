@@ -119,6 +119,32 @@ export interface SessionTopLevelAgentTurnState {
   completedBatchSummaries: SessionCompletedToolBatchSummary[]
 }
 
+export type SessionBackgroundCommandStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "aborted"
+
+export interface SessionBackgroundCommand {
+  commandId: string
+  originToolCallId: string
+  execIds: number[]
+  command: string
+  cwd: string
+  pid?: number
+  terminalsFolder?: string
+  status: SessionBackgroundCommandStatus
+  stdout: string[]
+  stderr: string[]
+  exitCode?: number
+  msToWait?: number
+  backgroundReason?: number
+  lastTerminalFileLength?: number
+  startedAt: number
+  updatedAt: number
+  completedAt?: number
+}
+
 /**
  * Chat session state for bidirectional streaming
  */
@@ -141,11 +167,13 @@ export interface ChatSession {
   supportedTools: string[]
   mcpToolDefs?: ParsedCursorRequest["mcpToolDefs"]
   useWeb: boolean
+  requestContextEnv?: ParsedCursorRequest["requestContextEnv"]
   createdAt: Date
   lastActivityAt: Date
 
   // Pending tool calls waiting for results
   pendingToolCalls: Map<string, PendingToolCall>
+  backgroundCommands: Map<string, SessionBackgroundCommand>
   // ExecServerMessage.id -> toolCallId mapping for control messages/tool results
   pendingToolCallByExecId: Map<number, string>
   // Identifies the current BiDi stream; used to detect orphaned tool calls from closed streams
@@ -376,6 +404,26 @@ interface PersistedPendingToolCall {
   }
 }
 
+interface PersistedBackgroundCommand {
+  commandId: string
+  originToolCallId: string
+  execIds: number[]
+  command: string
+  cwd: string
+  pid?: number
+  terminalsFolder?: string
+  status: SessionBackgroundCommandStatus
+  stdout: string[]
+  stderr: string[]
+  exitCode?: number
+  msToWait?: number
+  backgroundReason?: number
+  lastTerminalFileLength?: number
+  startedAt: number
+  updatedAt: number
+  completedAt?: number
+}
+
 interface PersistedSubAgentContext {
   parentToolCallId: string
   parentModelCallId: string
@@ -448,7 +496,7 @@ interface PersistedTopLevelAgentTurnState {
 }
 
 interface PersistedChatSessionV1 {
-  version: 1 | 2 | 3 | 4
+  version: 1 | 2 | 3 | 4 | 5
   conversationId: string
   messages: SessionMessage[]
   messageRecords?: ContextTranscriptRecord[]
@@ -463,9 +511,11 @@ interface PersistedChatSessionV1 {
   supportedTools: string[]
   mcpToolDefs?: ParsedCursorRequest["mcpToolDefs"]
   useWeb: boolean
+  requestContextEnv?: ParsedCursorRequest["requestContextEnv"]
   createdAt: number
   lastActivityAt: number
   pendingToolCalls: PersistedPendingToolCall[]
+  backgroundCommands?: PersistedBackgroundCommand[]
   pendingInteractionQueryCount: number
   projectContext?: ParsedCursorRequest["projectContext"]
   codeChunks?: ParsedCursorRequest["codeChunks"]
@@ -921,7 +971,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
 
   private serializeSession(session: ChatSession): PersistedChatSessionV1 {
     return {
-      version: 4,
+      version: 5,
       conversationId: session.conversationId,
       messages: session.messages,
       messageRecords: session.messageRecords,
@@ -979,6 +1029,7 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       supportedTools: session.supportedTools,
       mcpToolDefs: session.mcpToolDefs,
       useWeb: session.useWeb,
+      requestContextEnv: session.requestContextEnv,
       createdAt: this.toTimestamp(session.createdAt),
       lastActivityAt: this.toTimestamp(session.lastActivityAt),
       pendingToolCalls: Array.from(session.pendingToolCalls.values()).map(
@@ -1004,6 +1055,27 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
                 started: toolCall.shellStreamOutput.started,
               }
             : undefined,
+        })
+      ),
+      backgroundCommands: Array.from(session.backgroundCommands.values()).map(
+        (command) => ({
+          commandId: command.commandId,
+          originToolCallId: command.originToolCallId,
+          execIds: [...command.execIds],
+          command: command.command,
+          cwd: command.cwd,
+          pid: command.pid,
+          terminalsFolder: command.terminalsFolder,
+          status: command.status,
+          stdout: [...command.stdout],
+          stderr: [...command.stderr],
+          exitCode: command.exitCode,
+          msToWait: command.msToWait,
+          backgroundReason: command.backgroundReason,
+          lastTerminalFileLength: command.lastTerminalFileLength,
+          startedAt: command.startedAt,
+          updatedAt: command.updatedAt,
+          completedAt: command.completedAt,
         })
       ),
       pendingInteractionQueryCount: session.pendingInteractionQueries.size,
@@ -1553,9 +1625,87 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
         : [],
       mcpToolDefs: persisted.mcpToolDefs,
       useWeb: persisted.useWeb === true,
+      requestContextEnv: persisted.requestContextEnv,
       createdAt,
       lastActivityAt,
       pendingToolCalls: new Map(),
+      backgroundCommands: new Map(
+        Array.isArray(persisted.backgroundCommands)
+          ? persisted.backgroundCommands
+              .filter(
+                (command): command is PersistedBackgroundCommand =>
+                  !!command &&
+                  typeof command.commandId === "string" &&
+                  command.commandId.trim().length > 0
+              )
+              .map((command) => [
+                command.commandId,
+                {
+                  commandId: command.commandId,
+                  originToolCallId: command.originToolCallId,
+                  execIds: Array.isArray(command.execIds)
+                    ? command.execIds
+                        .filter(
+                          (value): value is number =>
+                            typeof value === "number" && Number.isFinite(value)
+                        )
+                        .map((value) => Math.max(0, Math.floor(value)))
+                    : [],
+                  command: command.command || "",
+                  cwd: command.cwd || "",
+                  pid:
+                    typeof command.pid === "number" &&
+                    Number.isFinite(command.pid)
+                      ? Math.max(0, Math.floor(command.pid))
+                      : undefined,
+                  terminalsFolder:
+                    typeof command.terminalsFolder === "string" &&
+                    command.terminalsFolder.trim().length > 0
+                      ? command.terminalsFolder.trim()
+                      : undefined,
+                  status:
+                    command.status === "completed" ||
+                    command.status === "failed" ||
+                    command.status === "aborted"
+                      ? command.status
+                      : "running",
+                  stdout: Array.isArray(command.stdout)
+                    ? [...command.stdout]
+                    : [],
+                  stderr: Array.isArray(command.stderr)
+                    ? [...command.stderr]
+                    : [],
+                  exitCode:
+                    typeof command.exitCode === "number" &&
+                    Number.isFinite(command.exitCode)
+                      ? Math.floor(command.exitCode)
+                      : undefined,
+                  msToWait:
+                    typeof command.msToWait === "number" &&
+                    Number.isFinite(command.msToWait)
+                      ? Math.floor(command.msToWait)
+                      : undefined,
+                  backgroundReason:
+                    typeof command.backgroundReason === "number" &&
+                    Number.isFinite(command.backgroundReason)
+                      ? Math.floor(command.backgroundReason)
+                      : undefined,
+                  lastTerminalFileLength:
+                    typeof command.lastTerminalFileLength === "number" &&
+                    Number.isFinite(command.lastTerminalFileLength)
+                      ? Math.max(0, Math.floor(command.lastTerminalFileLength))
+                      : undefined,
+                  startedAt: this.toTimestamp(command.startedAt),
+                  updatedAt: this.toTimestamp(command.updatedAt),
+                  completedAt:
+                    typeof command.completedAt === "number" &&
+                    Number.isFinite(command.completedAt)
+                      ? Math.max(0, Math.floor(command.completedAt))
+                      : undefined,
+                } satisfies SessionBackgroundCommand,
+              ])
+          : []
+      ),
       pendingToolCallByExecId: new Map(),
       currentStreamId: crypto.randomUUID(),
       projectContext: persisted.projectContext,
@@ -1649,9 +1799,11 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       supportedTools: initialRequest?.supportedTools || [],
       mcpToolDefs: initialRequest?.mcpToolDefs,
       useWeb: initialRequest?.useWeb || false,
+      requestContextEnv: initialRequest?.requestContextEnv,
       createdAt: new Date(),
       lastActivityAt: new Date(),
       pendingToolCalls: new Map(),
+      backgroundCommands: new Map(),
       pendingToolCallByExecId: new Map(),
       currentStreamId: crypto.randomUUID(),
       projectContext: initialRequest?.projectContext,
@@ -1733,6 +1885,9 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       }
       if (initialRequest?.useWeb !== undefined) {
         session.useWeb = initialRequest.useWeb
+      }
+      if (initialRequest) {
+        session.requestContextEnv = initialRequest.requestContextEnv
       }
       if (initialRequest?.projectContext) {
         session.projectContext = initialRequest.projectContext
@@ -1995,6 +2150,159 @@ export class ChatSessionManager implements OnModuleInit, OnModuleDestroy {
       stderr: pendingCall.shellStreamOutput.stderr.join(""),
       exitCode: pendingCall.shellStreamOutput.exitCode,
     }
+  }
+
+  registerBackgroundCommand(
+    conversationId: string,
+    command: {
+      commandId: string
+      originToolCallId: string
+      execIds?: Iterable<number>
+      command: string
+      cwd: string
+      pid?: number
+      terminalsFolder?: string
+      stdout?: string
+      stderr?: string
+      msToWait?: number
+      backgroundReason?: number
+    }
+  ): SessionBackgroundCommand | undefined {
+    const session = this.getSession(conversationId)
+    if (!session) return undefined
+
+    const normalizedCommandId =
+      typeof command.commandId === "string" ? command.commandId.trim() : ""
+    if (!normalizedCommandId) return undefined
+
+    const backgroundCommand: SessionBackgroundCommand = {
+      commandId: normalizedCommandId,
+      originToolCallId: command.originToolCallId,
+      execIds: Array.from(command.execIds || [])
+        .filter(
+          (value): value is number =>
+            typeof value === "number" && Number.isFinite(value) && value > 0
+        )
+        .map((value) => Math.floor(value)),
+      command: command.command,
+      cwd: command.cwd,
+      pid:
+        typeof command.pid === "number" && Number.isFinite(command.pid)
+          ? Math.max(0, Math.floor(command.pid))
+          : undefined,
+      terminalsFolder:
+        typeof command.terminalsFolder === "string" &&
+        command.terminalsFolder.trim() !== ""
+          ? command.terminalsFolder.trim()
+          : undefined,
+      status: "running",
+      stdout: command.stdout ? [command.stdout] : [],
+      stderr: command.stderr ? [command.stderr] : [],
+      msToWait:
+        typeof command.msToWait === "number" &&
+        Number.isFinite(command.msToWait)
+          ? Math.max(0, Math.floor(command.msToWait))
+          : undefined,
+      backgroundReason:
+        typeof command.backgroundReason === "number" &&
+        Number.isFinite(command.backgroundReason)
+          ? Math.floor(command.backgroundReason)
+          : undefined,
+      startedAt: Date.now(),
+      updatedAt: Date.now(),
+    }
+
+    session.backgroundCommands.set(normalizedCommandId, backgroundCommand)
+    session.lastActivityAt = new Date()
+    this.schedulePersist(conversationId)
+    return backgroundCommand
+  }
+
+  getBackgroundCommand(
+    conversationId: string,
+    commandId: string
+  ): SessionBackgroundCommand | undefined {
+    const session = this.getSession(conversationId)
+    if (!session) return undefined
+    return session.backgroundCommands.get(commandId.trim())
+  }
+
+  findBackgroundCommandByToolCallId(
+    conversationId: string,
+    toolCallId: string
+  ): SessionBackgroundCommand | undefined {
+    const session = this.getSession(conversationId)
+    if (!session) return undefined
+    for (const command of session.backgroundCommands.values()) {
+      if (command.originToolCallId === toolCallId) {
+        return command
+      }
+    }
+    return undefined
+  }
+
+  findBackgroundCommandByExecId(
+    conversationId: string,
+    execIdNumber: number
+  ): SessionBackgroundCommand | undefined {
+    const session = this.getSession(conversationId)
+    if (!session || !Number.isFinite(execIdNumber) || execIdNumber <= 0) {
+      return undefined
+    }
+    const normalizedExecId = Math.floor(execIdNumber)
+    for (const command of session.backgroundCommands.values()) {
+      if (command.execIds.includes(normalizedExecId)) {
+        return command
+      }
+    }
+    return undefined
+  }
+
+  appendBackgroundCommandOutput(
+    conversationId: string,
+    commandId: string,
+    stream: "stdout" | "stderr",
+    data: string
+  ): boolean {
+    const command = this.getBackgroundCommand(conversationId, commandId)
+    if (!command || !data) return false
+    command[stream].push(data)
+    command.updatedAt = Date.now()
+    this.markSessionDirty(conversationId)
+    return true
+  }
+
+  updateBackgroundCommandTerminalFileLength(
+    conversationId: string,
+    commandId: string,
+    length: number
+  ): boolean {
+    const command = this.getBackgroundCommand(conversationId, commandId)
+    if (!command || !Number.isFinite(length) || length < 0) return false
+    command.lastTerminalFileLength = Math.floor(length)
+    command.updatedAt = Date.now()
+    this.markSessionDirty(conversationId)
+    return true
+  }
+
+  setBackgroundCommandExit(
+    conversationId: string,
+    commandId: string,
+    exitCode: number,
+    aborted = false
+  ): boolean {
+    const command = this.getBackgroundCommand(conversationId, commandId)
+    if (!command) return false
+    command.exitCode = Math.floor(exitCode)
+    command.status = aborted
+      ? "aborted"
+      : exitCode === 0
+        ? "completed"
+        : "failed"
+    command.updatedAt = Date.now()
+    command.completedAt = Date.now()
+    this.markSessionDirty(conversationId)
+    return true
   }
 
   /**

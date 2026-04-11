@@ -5,6 +5,13 @@ import { TokenCounterService } from "../../context/token-counter.service"
 import { normalizeToolProtocolMessages } from "../../context/tool-protocol-normalizer"
 import { CreateMessageDto } from "../../protocol/anthropic/dto/create-message.dto"
 import type { AnthropicResponse, ContentBlock } from "../../shared/anthropic"
+import type { CloudCodeToolDeclaration } from "../../shared/cloud-code"
+import {
+  adaptOfficialAntigravityToolInput as adaptOfficialAntigravityToolInputFromContract,
+  buildOfficialAntigravityToolDeclarations as buildOfficialAntigravityToolDeclarationsFromContract,
+  fromOfficialAntigravityToolName as fromOfficialAntigravityToolNameFromContract,
+  toOfficialAntigravityToolName as toOfficialAntigravityToolNameFromContract,
+} from "../../shared/official-antigravity-tools"
 import {
   DEFAULT_CLAUDE_MODEL,
   doesModelSupportThinking,
@@ -2199,86 +2206,23 @@ export class GoogleService {
     return model.toLowerCase().includes("claude")
   }
 
-  private normalizeCloudCodeToolToken(name: string): string {
-    return name
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-  }
-
   private sanitizeCloudCodeToolName(name: string): string {
     return name.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64)
   }
 
   private toOfficialAntigravityToolName(name: string): string {
-    const normalized = this.normalizeCloudCodeToolToken(name)
-    const map: Record<string, string> = {
-      read_file: "view_file",
-      read_file_v2: "view_file",
-      view_file: "view_file",
-      list_directory: "list_dir",
-      list_dir: "list_dir",
-      grep_search: "grep_search",
-      ripgrep_search: "grep_search",
-      edit_file: "replace_file_content",
-      edit_file_v2: "replace_file_content",
-      replace_file_content: "replace_file_content",
-      multi_replace_file_content: "multi_replace_file_content",
-      write_to_file: "write_to_file",
-      run_terminal_command: "run_command",
-      run_terminal_command_v2: "run_command",
-      shell: "run_command",
-      run_command: "run_command",
-      background_shell_spawn: "run_command",
-      write_shell_stdin: "send_command_input",
-      send_command_input: "send_command_input",
-      command_status: "command_status",
-      web_search: "search_web",
-      search_web: "search_web",
-      web_fetch: "read_url_content",
-      read_url_content: "read_url_content",
-      generate_image: "generate_image",
-      browser_subagent: "browser_subagent",
-    }
-    return map[normalized] || normalized
+    return toOfficialAntigravityToolNameFromContract(name)
   }
 
   private fromOfficialAntigravityToolName(name: string): string {
-    const normalized = this.normalizeCloudCodeToolToken(name)
-    const map: Record<string, string> = {
-      view_file: "view_file",
-      list_dir: "list_dir",
-      run_command: "run_command",
-      send_command_input: "send_command_input",
-      replace_file_content: "replace_file_content",
-      multi_replace_file_content: "multi_replace_file_content",
-      write_to_file: "write_to_file",
-      search_web: "search_web",
-      read_url_content: "read_url_content",
-      command_status: "command_status",
-      generate_image: "generate_image",
-      browser_subagent: "browser_subagent",
-    }
-    return map[normalized] || name
+    return fromOfficialAntigravityToolNameFromContract(name)
   }
 
   private adaptOfficialAntigravityToolInput(
     officialName: string,
     input: Record<string, unknown>
   ): Record<string, unknown> {
-    const normalized = this.normalizeCloudCodeToolToken(officialName)
-    switch (normalized) {
-      case "browser_subagent":
-        return {
-          description:
-            input.Task || input.task || input.description || input.TaskSummary,
-          prompt: input.Task || input.task || input.description,
-          subagent_type: "browser",
-        }
-      default:
-        return { ...input }
-    }
+    return adaptOfficialAntigravityToolInputFromContract(officialName, input)
   }
 
   private resolveCloudCodeToolChoice(
@@ -2835,13 +2779,11 @@ export class GoogleService {
       input_schema?: unknown
     }>,
     useOfficialAntigravityTools = false
-  ): Array<{ functionDeclarations: Array<Record<string, unknown>> }> {
+  ): CloudCodeToolDeclaration[] {
     if (useOfficialAntigravityTools) {
       return this.buildOfficialAntigravityToolDeclarations(tools)
     }
-    const declarations: Array<{
-      functionDeclarations: Array<Record<string, unknown>>
-    }> = []
+    const declarations: CloudCodeToolDeclaration[] = []
     const seenNames = new Set<string>()
 
     const addDeclaration = (
@@ -2987,315 +2929,8 @@ export class GoogleService {
       description?: unknown
       input_schema?: unknown
     }>
-  ): Array<{ functionDeclarations: Array<Record<string, unknown>> }> {
-    const available = new Set<string>()
-    for (const tool of tools) {
-      if (typeof tool?.name !== "string") continue
-      available.add(this.toOfficialAntigravityToolName(tool.name))
-    }
-
-    const declarations: Array<{
-      functionDeclarations: Array<Record<string, unknown>>
-    }> = []
-    const add = (
-      name: string,
-      description: string,
-      properties: Record<string, unknown>,
-      required: string[] = []
-    ) => {
-      declarations.push({
-        functionDeclarations: [
-          {
-            name,
-            description,
-            parameters: {
-              type: "OBJECT",
-              properties: {
-                toolAction: {
-                  type: "STRING",
-                  description:
-                    "Brief 2-5 word summary of what this tool is doing.",
-                },
-                toolSummary: {
-                  type: "STRING",
-                  description:
-                    "Brief 2-5 word noun phrase describing what this tool call is about.",
-                },
-                ...properties,
-                waitForPreviousTools: {
-                  type: "BOOLEAN",
-                  description:
-                    "If true, wait for all previous tool calls from this turn to complete before executing (sequential). If false or omitted, execute this tool immediately (parallel with other tools).",
-                },
-              },
-              ...(required.length > 0 ? { required } : {}),
-            },
-          },
-        ],
-      })
-    }
-
-    add(
-      "command_status",
-      "Check the status of a previously started command.",
-      {
-        CommandId: { type: "STRING", description: "Command/process id" },
-        OutputCharacterCount: {
-          type: "INTEGER",
-          description: "Optional number of characters to read from output.",
-        },
-        WaitDurationSeconds: {
-          type: "INTEGER",
-          description:
-            "Number of seconds to wait for completion before returning status.",
-        },
-      },
-      ["CommandId", "WaitDurationSeconds"]
-    )
-    add(
-      "generate_image",
-      "Generate an image from a prompt.",
-      {
-        Prompt: { type: "STRING", description: "Image generation prompt" },
-        ImageName: {
-          type: "STRING",
-          description: "Artifact file name to save the image under.",
-        },
-        ImagePaths: {
-          type: "ARRAY",
-          description: "Optional absolute image paths to use as references.",
-          items: { type: "STRING" },
-        },
-      },
-      ["Prompt", "ImageName"]
-    )
-    add(
-      "grep_search",
-      "Search file contents using ripgrep.",
-      {
-        SearchPath: {
-          type: "STRING",
-          description: "Absolute file or directory path to search within.",
-        },
-        Query: { type: "STRING", description: "Search query or regex." },
-        Includes: {
-          type: "ARRAY",
-          description: "Optional glob patterns to include or exclude.",
-          items: { type: "STRING" },
-        },
-        CaseInsensitive: { type: "BOOLEAN" },
-        IsRegex: { type: "BOOLEAN" },
-        MatchPerLine: { type: "BOOLEAN" },
-      },
-      ["SearchPath", "Query"]
-    )
-    add(
-      "list_dir",
-      "List the contents of a directory.",
-      {
-        DirectoryPath: {
-          type: "STRING",
-          description: "Absolute directory path to list.",
-        },
-      },
-      ["DirectoryPath"]
-    )
-    add(
-      "multi_replace_file_content",
-      "Replace one or more text ranges in a file.",
-      {
-        TargetFile: {
-          type: "STRING",
-          description: "Absolute file path to modify.",
-        },
-        Instruction: {
-          type: "STRING",
-          description: "Description of the file changes being made.",
-        },
-        Description: {
-          type: "STRING",
-          description:
-            "Brief user-facing explanation of the edit rationale or context.",
-        },
-        ArtifactMetadata: {
-          type: "OBJECT",
-          description:
-            "Artifact metadata when the target file is an artifact document.",
-          properties: {
-            ArtifactType: {
-              type: "STRING",
-              enum: ["implementation_plan", "walkthrough", "task", "other"],
-            },
-            RequestFeedback: { type: "BOOLEAN" },
-            Summary: { type: "STRING" },
-          },
-        },
-        ReplacementChunks: {
-          type: "ARRAY",
-          items: {
-            type: "OBJECT",
-            properties: {
-              AllowMultiple: { type: "BOOLEAN" },
-              TargetContent: { type: "STRING" },
-              ReplacementContent: { type: "STRING" },
-              StartLine: { type: "INTEGER" },
-              EndLine: { type: "INTEGER" },
-            },
-            required: [
-              "AllowMultiple",
-              "TargetContent",
-              "ReplacementContent",
-              "StartLine",
-              "EndLine",
-            ],
-          },
-        },
-      },
-      ["TargetFile", "Instruction", "Description", "ReplacementChunks"]
-    )
-    add(
-      "read_url_content",
-      "Fetch content from a URL via HTTP request (invisible to USER). Supports HTML and PDF content types. No JavaScript execution, no authentication.",
-      { Url: { type: "STRING", description: "URL to read content from" } },
-      ["Url"]
-    )
-    add(
-      "replace_file_content",
-      "Replace text in a file.",
-      {
-        TargetFile: {
-          type: "STRING",
-          description: "Absolute file path to modify.",
-        },
-        Instruction: {
-          type: "STRING",
-          description: "Description of the file changes being made.",
-        },
-        Description: {
-          type: "STRING",
-          description:
-            "Brief user-facing explanation of the edit rationale or context.",
-        },
-        AllowMultiple: { type: "BOOLEAN" },
-        TargetContent: { type: "STRING" },
-        ReplacementContent: { type: "STRING" },
-        StartLine: { type: "INTEGER" },
-        EndLine: { type: "INTEGER" },
-        TargetLintErrorIds: {
-          type: "ARRAY",
-          items: { type: "STRING" },
-        },
-      },
-      [
-        "TargetFile",
-        "Instruction",
-        "Description",
-        "AllowMultiple",
-        "TargetContent",
-        "ReplacementContent",
-        "StartLine",
-        "EndLine",
-      ]
-    )
-    add(
-      "run_command",
-      "Run a shell command in the workspace.",
-      {
-        CommandLine: { type: "STRING", description: "Command to run." },
-        Cwd: { type: "STRING", description: "Working directory." },
-        RequestedTerminalID: {
-          type: "STRING",
-          description: "Optional persistent terminal id to reuse.",
-        },
-        RunPersistent: {
-          type: "BOOLEAN",
-          description: "Whether to keep the command in a persistent terminal.",
-        },
-        SafeToAutoRun: {
-          type: "BOOLEAN",
-          description:
-            "Whether the command is safe enough to run automatically.",
-        },
-      },
-      ["CommandLine", "Cwd", "SafeToAutoRun"]
-    )
-    add(
-      "search_web",
-      "Performs a web search for a given query. Returns a summary of relevant information along with URL citations.",
-      {
-        domain: {
-          type: "STRING",
-          description: "Optional domain to recommend the search prioritize",
-        },
-        query: { type: "STRING" },
-      },
-      ["query"]
-    )
-    add(
-      "send_command_input",
-      "Send input to a running command.",
-      {
-        CommandId: { type: "STRING" },
-        Input: { type: "STRING" },
-        Terminate: { type: "BOOLEAN" },
-        WaitMs: { type: "INTEGER" },
-        SafeToAutoRun: { type: "BOOLEAN" },
-      },
-      ["CommandId", "WaitMs", "SafeToAutoRun"]
-    )
-    add(
-      "view_file",
-      "Read the contents of a file at the specified path.",
-      {
-        AbsolutePath: { type: "STRING", description: "Absolute file path." },
-        StartLine: { type: "INTEGER" },
-        EndLine: { type: "INTEGER" },
-        IsSkillFile: { type: "BOOLEAN" },
-      },
-      ["AbsolutePath"]
-    )
-    add(
-      "write_to_file",
-      "Write content to a file.",
-      {
-        TargetFile: {
-          type: "STRING",
-          description: "Absolute file path to create or overwrite.",
-        },
-        Overwrite: {
-          type: "BOOLEAN",
-          description: "Whether to overwrite an existing file.",
-        },
-        CodeContent: {
-          type: "STRING",
-          description: "The full file contents to write.",
-        },
-        Description: {
-          type: "STRING",
-          description:
-            "Brief user-facing explanation of the write rationale or context.",
-        },
-        IsArtifact: {
-          type: "BOOLEAN",
-          description: "Whether the file being written is an artifact.",
-        },
-        ArtifactMetadata: {
-          type: "OBJECT",
-          description: "Artifact metadata when creating an artifact document.",
-          properties: {
-            ArtifactType: {
-              type: "STRING",
-              enum: ["implementation_plan", "walkthrough", "task", "other"],
-            },
-            RequestFeedback: { type: "BOOLEAN" },
-            Summary: { type: "STRING" },
-          },
-        },
-      },
-      ["TargetFile", "Overwrite", "CodeContent", "Description", "IsArtifact"]
-    )
-
-    return declarations
+  ): CloudCodeToolDeclaration[] {
+    return buildOfficialAntigravityToolDeclarationsFromContract(tools)
   }
 
   /**

@@ -57,6 +57,7 @@ import {
   ChatSessionManager,
   InterruptedToolCallInfo,
   PendingToolCall,
+  SessionBackgroundCommand,
   SessionActiveToolBatch,
   SessionCompletedToolBatchSummary,
   SessionRestartRecovery,
@@ -87,6 +88,12 @@ import {
   resolveMcpToolDefinition,
 } from "./mcp-call-contract"
 import { SemanticSearchProviderService } from "./semantic-search-provider.service"
+import {
+  canonicalizeOfficialAntigravityToolInvocation as canonicalizeOfficialAntigravityToolInvocationFromContract,
+  extractOfficialAntigravityArtifactMetadata as extractOfficialAntigravityArtifactMetadataFromContract,
+  type OfficialAntigravityArtifactMetadata,
+  type OfficialAntigravityCanonicalToolInvocation,
+} from "../../shared/official-antigravity-tools"
 
 /**
  * SSE Event content block structure (content_block_start)
@@ -244,6 +251,7 @@ type InlineWebToolFamily = "web_search" | "web_fetch"
 
 type DeferredToolFamily =
   | InlineWebToolFamily
+  | "command_status"
   | "get_mcp_tools"
   | "read_url_content"
   | "view_content_chunk"
@@ -388,24 +396,7 @@ interface AssistantTurnStreamOutcome {
   toolCallCount: number
 }
 
-interface CanonicalToolInvocation {
-  toolName: string
-  input: Record<string, unknown>
-  historyToolName?: string
-  historyToolInput?: Record<string, unknown>
-}
-
-type OfficialAntigravityArtifactType =
-  | "implementation_plan"
-  | "walkthrough"
-  | "task"
-  | "other"
-
-interface OfficialAntigravityArtifactMetadata {
-  artifactType: OfficialAntigravityArtifactType
-  requestFeedback?: boolean
-  summary?: string
-}
+type CanonicalToolInvocation = OfficialAntigravityCanonicalToolInvocation
 
 interface CursorArtifactUiProjection {
   toolName: "create_plan" | "update_todos"
@@ -3761,7 +3752,8 @@ ${raw}
     toolName: string,
     toolInput: Record<string, unknown>,
     content: string,
-    toolResultState?: { status: ToolResultStatus; message?: string }
+    toolResultState?: { status: ToolResultStatus; message?: string },
+    extraData?: ToolCompletedExtraData
   ): string {
     if (
       this.isMutatingFileTool(toolName) &&
@@ -3780,6 +3772,39 @@ ${raw}
         content,
         toolResultState
       )
+    }
+
+    const normalizedToolName = toolName.trim().toLowerCase()
+    if (
+      normalizedToolName === "run_command" ||
+      normalizedToolName === "run_terminal_command" ||
+      normalizedToolName === "run_terminal_command_v2" ||
+      normalizedToolName === "shell"
+    ) {
+      return this.formatShellToolResultForHistory(
+        toolName,
+        toolInput,
+        content,
+        toolResultState,
+        extraData?.shellResult
+      )
+    }
+
+    if (
+      normalizedToolName === "send_command_input" ||
+      normalizedToolName === "write_shell_stdin"
+    ) {
+      return this.formatWriteShellStdinResultForHistory(
+        toolName,
+        toolInput,
+        content,
+        toolResultState,
+        extraData?.writeShellStdinSuccess
+      )
+    }
+
+    if (normalizedToolName === "command_status") {
+      return content
     }
 
     const family = this.normalizeDeferredToolFamily(toolName)
@@ -3875,6 +3900,119 @@ ${raw}
     }
 
     return content
+  }
+
+  private formatShellToolResultForHistory(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    content: string,
+    toolResultState?: { status: ToolResultStatus; message?: string },
+    shellResult?: ToolCompletedExtraData["shellResult"]
+  ): string {
+    const normalizedToolName =
+      (toolName || "run_command").trim() || "run_command"
+    const command =
+      this.pickFirstString(toolInput, ["command", "CommandLine", "cmd"]) || ""
+    const cwd =
+      this.pickFirstString(toolInput, [
+        "cwd",
+        "Cwd",
+        "working_directory",
+        "workingDirectory",
+      ]) || ""
+
+    if (toolResultState?.status === "rejected") {
+      return `[${normalizedToolName} rejected] ${toolResultState.message || "request rejected"}`
+    }
+    if (toolResultState && toolResultState.status !== "success") {
+      return `[${normalizedToolName} error] ${toolResultState.message || "request failed"}`
+    }
+
+    const lines = [`[${normalizedToolName} success]`]
+    if (command) {
+      lines.push(
+        `command: ${
+          command.length > 320
+            ? `${command.slice(0, 317).trimEnd()}...`
+            : command
+        }`
+      )
+    }
+    if (cwd) lines.push(`cwd: ${cwd}`)
+    if (typeof shellResult?.shellId === "number") {
+      lines.push(`CommandId: ${shellResult.shellId}`)
+    }
+    if (typeof shellResult?.pid === "number") {
+      lines.push(`pid: ${shellResult.pid}`)
+    }
+    if (typeof shellResult?.msToWait === "number") {
+      lines.push(`ms_to_wait: ${shellResult.msToWait}`)
+    }
+
+    const isBackground =
+      Boolean(shellResult?.isBackground) ||
+      typeof shellResult?.shellId === "number" ||
+      typeof shellResult?.msToWait === "number" ||
+      typeof shellResult?.backgroundReason === "number"
+    lines.push(`status: ${isBackground ? "running" : "completed"}`)
+    if (!isBackground && typeof shellResult?.exitCode === "number") {
+      lines.push(`exit_code: ${shellResult.exitCode}`)
+    }
+
+    const compact = content.replace(/\s+/g, " ").trim()
+    if (!isBackground && compact) {
+      lines.push("", compact.slice(0, 1200))
+    }
+
+    return lines.join("\n")
+  }
+
+  private formatWriteShellStdinResultForHistory(
+    toolName: string,
+    toolInput: Record<string, unknown>,
+    content: string,
+    toolResultState?: { status: ToolResultStatus; message?: string },
+    writeShellStdinSuccess?: ToolCompletedExtraData["writeShellStdinSuccess"]
+  ): string {
+    const normalizedToolName =
+      (toolName || "send_command_input").trim() || "send_command_input"
+    const commandId =
+      this.pickFirstString(toolInput, [
+        "CommandId",
+        "commandId",
+        "command_id",
+        "shellId",
+        "shell_id",
+      ]) || ""
+
+    if (toolResultState?.status === "rejected") {
+      return `[${normalizedToolName} rejected] ${toolResultState.message || "request rejected"}`
+    }
+    if (toolResultState && toolResultState.status !== "success") {
+      return `[${normalizedToolName} error] ${toolResultState.message || "request failed"}`
+    }
+
+    const lines = [`[${normalizedToolName} success]`]
+    if (commandId) {
+      lines.push(`CommandId: ${commandId}`)
+    } else if (typeof writeShellStdinSuccess?.shellId === "number") {
+      lines.push(`CommandId: ${writeShellStdinSuccess.shellId}`)
+    }
+    if (
+      typeof writeShellStdinSuccess?.terminalFileLengthBeforeInputWritten ===
+      "number"
+    ) {
+      lines.push(
+        `terminal_length_before_input: ${writeShellStdinSuccess.terminalFileLengthBeforeInputWritten}`
+      )
+    }
+
+    const compact = content.replace(/\s+/g, " ").trim()
+    if (compact) {
+      lines.push("", compact.slice(0, 600))
+    }
+
+    return lines.join("\n")
   }
 
   private formatMutatingFileToolResultForHistory(
@@ -4159,15 +4297,27 @@ ${raw}
       searchText
     )
     if (occurrenceCount === 0) {
+      const rangeLabel =
+        options.startLine != null || options.endLine != null
+          ? ` ${options.startLine ?? "?"}-${options.endLine ?? "?"}`
+          : ""
       return {
         fileText: content,
-        warning: `${options.warningPrefix} target content not found in specified line range`,
+        warning:
+          `${options.warningPrefix} target content not found in specified line range${rangeLabel}; ` +
+          `ensure StartLine/EndLine fully cover the entire TargetContent and re-read a slightly wider window`,
       }
     }
     if (!allowMultiple && occurrenceCount > 1) {
+      const rangeLabel =
+        options.startLine != null || options.endLine != null
+          ? ` ${options.startLine ?? "?"}-${options.endLine ?? "?"}`
+          : ""
       return {
         fileText: content,
-        warning: `${options.warningPrefix} matched ${occurrenceCount} times in specified line range; expected unique match`,
+        warning:
+          `${options.warningPrefix} matched ${occurrenceCount} times in specified line range${rangeLabel}; ` +
+          `narrow StartLine/EndLine so the TargetContent is unique`,
       }
     }
 
@@ -4181,6 +4331,137 @@ ${raw}
         replacedSlice +
         content.slice(range.endOffset),
     }
+  }
+
+  private compactEditLogPreview(value: string, maxChars = 120): string {
+    const compact = value.replace(/\s+/g, " ").trim()
+    if (compact.length <= maxChars) return compact
+    return `${compact.slice(0, Math.max(maxChars - 3, 0))}...`
+  }
+
+  private summarizeEditToolInputForLogs(toolInput: ToolInputWithPath): string {
+    const input = toolInput as Record<string, unknown>
+    const parts: string[] = []
+    const filePath = typeof toolInput.path === "string" ? toolInput.path : ""
+    if (filePath) parts.push(`path=${filePath}`)
+
+    const overwrite = this.pickFirstBoolean(input, ["overwrite", "Overwrite"])
+    if (typeof overwrite === "boolean") {
+      parts.push(`overwrite=${overwrite}`)
+    }
+
+    if (typeof toolInput.file_text === "string") {
+      parts.push(`file_text_len=${toolInput.file_text.length}`)
+      return parts.join(" | ")
+    }
+
+    const rawReplacementChunks = Array.isArray(input.replacementChunks)
+      ? input.replacementChunks
+      : []
+    if (rawReplacementChunks.length > 0) {
+      parts.push(`replacement_chunks=${rawReplacementChunks.length}`)
+      const chunkPreview = rawReplacementChunks
+        .slice(0, 3)
+        .map((rawChunk, index) => {
+          if (!rawChunk || typeof rawChunk !== "object") {
+            return `#${index + 1}:invalid`
+          }
+          const chunk = rawChunk as Record<string, unknown>
+          const startLine = this.pickFirstNumber(chunk, [
+            "startLine",
+            "start_line",
+            "StartLine",
+          ])
+          const endLine = this.pickFirstNumber(chunk, [
+            "endLine",
+            "end_line",
+            "EndLine",
+          ])
+          const allowMultiple = this.pickFirstBoolean(chunk, [
+            "allowMultiple",
+            "allow_multiple",
+            "AllowMultiple",
+          ])
+          const searchText =
+            this.pickFirstRawString(chunk, [
+              "targetContent",
+              "target_content",
+              "TargetContent",
+              "search",
+            ]) ?? ""
+          const replaceText =
+            this.pickFirstRawString(
+              chunk,
+              [
+                "replacementContent",
+                "replacement_content",
+                "ReplacementContent",
+                "replace",
+              ],
+              { allowEmpty: true }
+            ) ?? ""
+          const summary = [`#${index + 1}`]
+          if (startLine != null || endLine != null) {
+            summary.push(`lines=${startLine ?? "?"}-${endLine ?? "?"}`)
+          }
+          if (typeof allowMultiple === "boolean") {
+            summary.push(`allowMultiple=${allowMultiple}`)
+          }
+          summary.push(`search_len=${searchText.length}`)
+          if (searchText.length > 0) {
+            summary.push(
+              `search_preview=${JSON.stringify(this.compactEditLogPreview(searchText, 80))}`
+            )
+          }
+          summary.push(`replace_len=${replaceText.length}`)
+          return summary.join(",")
+        })
+        .join(" ; ")
+      if (chunkPreview) {
+        parts.push(`chunk_preview=${chunkPreview}`)
+      }
+      return parts.join(" | ")
+    }
+
+    const searchText =
+      this.pickFirstRawString(input, ["search", "old_text"], {
+        allowEmpty: true,
+      }) ?? ""
+    const replaceText =
+      this.pickFirstRawString(input, ["replace", "new_text"], {
+        allowEmpty: true,
+      }) ?? ""
+    const startLine = this.pickFirstNumber(input, [
+      "start_line",
+      "startLine",
+      "StartLine",
+    ])
+    const endLine = this.pickFirstNumber(input, [
+      "end_line",
+      "endLine",
+      "EndLine",
+    ])
+    const allowMultiple = this.pickFirstBoolean(input, [
+      "allow_multiple",
+      "allowMultiple",
+      "AllowMultiple",
+    ])
+
+    if (startLine != null || endLine != null) {
+      parts.push(`lines=${startLine ?? "?"}-${endLine ?? "?"}`)
+    }
+    if (typeof allowMultiple === "boolean") {
+      parts.push(`allowMultiple=${allowMultiple}`)
+    }
+    parts.push(`search_len=${searchText.length}`)
+    if (searchText.length > 0) {
+      parts.push(
+        `search_preview=${JSON.stringify(this.compactEditLogPreview(searchText))}`
+      )
+    }
+    parts.push(`replace_len=${replaceText.length}`)
+
+    return parts.join(" | ")
   }
 
   /**
@@ -4516,119 +4797,10 @@ ${raw}
     return true
   }
 
-  private normalizeOfficialAntigravityArtifactType(
-    value: string
-  ): OfficialAntigravityArtifactType | undefined {
-    const normalized = value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-    if (
-      normalized === "implementation_plan" ||
-      normalized === "walkthrough" ||
-      normalized === "task" ||
-      normalized === "other"
-    ) {
-      return normalized
-    }
-    return undefined
-  }
-
   private extractOfficialAntigravityArtifactMetadata(
     input: Record<string, unknown>
   ): OfficialAntigravityArtifactMetadata | undefined {
-    const raw =
-      (input.ArtifactMetadata as Record<string, unknown> | undefined) ||
-      (input.artifactMetadata as Record<string, unknown> | undefined) ||
-      (input.artifact_metadata as Record<string, unknown> | undefined)
-    if (!raw || typeof raw !== "object") return undefined
-
-    const artifactTypeValue = this.pickFirstString(raw, [
-      "ArtifactType",
-      "artifactType",
-      "artifact_type",
-    ])
-    const artifactType = artifactTypeValue
-      ? this.normalizeOfficialAntigravityArtifactType(artifactTypeValue)
-      : undefined
-    if (!artifactType) return undefined
-
-    const summary = this.pickFirstString(raw, ["Summary", "summary"]) || ""
-    const requestFeedback = this.pickFirstBoolean(raw, [
-      "RequestFeedback",
-      "requestFeedback",
-      "request_feedback",
-    ])
-
-    return {
-      artifactType,
-      ...(summary ? { summary } : {}),
-      ...(typeof requestFeedback === "boolean" ? { requestFeedback } : {}),
-    }
-  }
-
-  private buildCanonicalOfficialAntigravityEditMetadata(
-    input: Record<string, unknown>,
-    pathValue: string
-  ): Record<string, unknown> {
-    const metadata = this.extractOfficialAntigravityArtifactMetadata(input)
-    const description =
-      this.pickFirstString(input, ["Description", "description"]) || ""
-    const instruction =
-      this.pickFirstString(input, ["Instruction", "instruction"]) || ""
-    const overwrite = this.pickFirstBoolean(input, ["Overwrite", "overwrite"])
-    const isArtifact = this.pickFirstBoolean(input, [
-      "IsArtifact",
-      "isArtifact",
-      "is_artifact",
-    ])
-
-    return {
-      path: pathValue,
-      ...(description ? { description } : {}),
-      ...(instruction ? { instruction } : {}),
-      ...(typeof overwrite === "boolean"
-        ? { overwrite, Overwrite: overwrite }
-        : {}),
-      ...(typeof isArtifact === "boolean"
-        ? { isArtifact, is_artifact: isArtifact, IsArtifact: isArtifact }
-        : {}),
-      ...(metadata
-        ? {
-            artifactMetadata: metadata,
-            artifact_metadata: metadata,
-            ArtifactMetadata: {
-              ArtifactType: metadata.artifactType,
-              ...(typeof metadata.requestFeedback === "boolean"
-                ? { RequestFeedback: metadata.requestFeedback }
-                : {}),
-              ...(metadata.summary ? { Summary: metadata.summary } : {}),
-            },
-          }
-        : {}),
-    }
-  }
-
-  private pickOfficialAntigravityFilePath(
-    input: Record<string, unknown>
-  ): string {
-    return (
-      this.pickFirstString(input, [
-        "TargetFile",
-        "targetFile",
-        "target_file",
-        "AbsolutePath",
-        "absolutePath",
-        "absolute_path",
-        "DirectoryPath",
-        "directoryPath",
-        "directory_path",
-        "path",
-        "filePath",
-        "file_path",
-      ]) || ""
-    )
+    return extractOfficialAntigravityArtifactMetadataFromContract(input)
   }
 
   private deriveArtifactTitleFromMarkdown(
@@ -4840,282 +5012,10 @@ ${raw}
     toolName: string,
     input: Record<string, unknown>
   ): CanonicalToolInvocation | null {
-    const normalized = toolName
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "_")
-      .replace(/^_+|_+$/g, "")
-    const historyToolInput = { ...input }
-    const historyToolName = toolName
-    const filePath = this.pickOfficialAntigravityFilePath(input)
-
-    switch (normalized) {
-      case "view_file":
-        return {
-          toolName: "read_file",
-          input: {
-            path: filePath,
-            start_line: input.StartLine || input.start_line || input.startLine,
-            end_line: input.EndLine || input.end_line || input.endLine,
-            is_skill_file:
-              input.IsSkillFile || input.is_skill_file || input.isSkillFile,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "list_dir":
-        return {
-          toolName: "list_directory",
-          input: {
-            path: filePath,
-            recursive: input.recursive,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "run_command":
-        return {
-          toolName: "run_terminal_command",
-          input: {
-            command: input.CommandLine || input.command || input.cmd,
-            cwd:
-              input.Cwd ||
-              input.cwd ||
-              input.working_directory ||
-              input.workingDirectory,
-            safeToAutoRun:
-              input.SafeToAutoRun ||
-              input.safeToAutoRun ||
-              input.safe_to_auto_run,
-            runPersistent:
-              input.RunPersistent ||
-              input.runPersistent ||
-              input.run_persistent,
-            requestedTerminalId:
-              input.RequestedTerminalID ||
-              input.requestedTerminalId ||
-              input.requested_terminal_id,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "send_command_input":
-        return {
-          toolName: "write_shell_stdin",
-          input: {
-            shellId:
-              input.CommandId ||
-              input.shellId ||
-              input.shell_id ||
-              input.command_id ||
-              input.commandId,
-            data: input.Input || input.data || input.input || input.text,
-            terminate:
-              input.Terminate || input.terminate || input.shouldTerminate,
-            wait_ms: input.WaitMs || input.waitMs || input.wait_ms,
-            safeToAutoRun:
-              input.SafeToAutoRun ||
-              input.safeToAutoRun ||
-              input.safe_to_auto_run,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "replace_file_content":
-        return {
-          toolName: "edit_file_v2",
-          input: {
-            ...this.buildCanonicalOfficialAntigravityEditMetadata(
-              input,
-              filePath
-            ),
-            search:
-              input.TargetContent ||
-              input.targetContent ||
-              input.target_content ||
-              input.search ||
-              input.old_text ||
-              input.oldText ||
-              input.target,
-            replace:
-              this.pickFirstRawString(
-                input,
-                [
-                  "ReplacementContent",
-                  "replacementContent",
-                  "replacement_content",
-                  "replace",
-                  "new_text",
-                  "newText",
-                  "replacement",
-                ],
-                { allowEmpty: true }
-              ) ?? undefined,
-            allow_multiple: this.pickFirstBoolean(input, [
-              "AllowMultiple",
-              "allowMultiple",
-              "allow_multiple",
-            ]),
-            start_line: this.pickFirstNumber(input, [
-              "StartLine",
-              "startLine",
-              "start_line",
-            ]),
-            end_line: this.pickFirstNumber(input, [
-              "EndLine",
-              "endLine",
-              "end_line",
-            ]),
-            target_lint_error_ids:
-              input.TargetLintErrorIds ||
-              input.targetLintErrorIds ||
-              input.target_lint_error_ids,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "multi_replace_file_content": {
-        const rawChunks = Array.isArray(input.ReplacementChunks)
-          ? input.ReplacementChunks
-          : Array.isArray(input.replacementChunks)
-            ? input.replacementChunks
-            : []
-        const replacementChunks = rawChunks
-          .filter(
-            (entry): entry is Record<string, unknown> =>
-              !!entry && typeof entry === "object"
-          )
-          .map((chunk) => ({
-            allowMultiple: this.pickFirstBoolean(chunk, [
-              "AllowMultiple",
-              "allowMultiple",
-              "allow_multiple",
-            ]),
-            targetContent: this.pickFirstRawString(chunk, [
-              "TargetContent",
-              "targetContent",
-              "target_content",
-              "search",
-            ]),
-            replacementContent: this.pickFirstRawString(
-              chunk,
-              [
-                "ReplacementContent",
-                "replacementContent",
-                "replacement_content",
-                "replace",
-              ],
-              { allowEmpty: true }
-            ),
-            startLine: this.pickFirstNumber(chunk, [
-              "StartLine",
-              "startLine",
-              "start_line",
-            ]),
-            endLine: this.pickFirstNumber(chunk, [
-              "EndLine",
-              "endLine",
-              "end_line",
-            ]),
-          }))
-        return {
-          toolName: "edit_file_v2",
-          input: {
-            ...this.buildCanonicalOfficialAntigravityEditMetadata(
-              input,
-              filePath
-            ),
-            replacementChunks,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      }
-      case "write_to_file":
-        return {
-          toolName: "edit_file_v2",
-          input: {
-            ...this.buildCanonicalOfficialAntigravityEditMetadata(
-              input,
-              filePath
-            ),
-            file_text: this.pickFirstRawString(
-              input,
-              ["CodeContent", "content", "file_text", "fileText", "text"],
-              { allowEmpty: true }
-            ),
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "search_web":
-        return {
-          toolName: "web_search",
-          input: {
-            query: input.query || input.search_query || input.searchQuery,
-            domain: input.domain,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "read_url_content":
-        return {
-          toolName: "web_fetch",
-          input: { url: input.url || input.Url || input.URL },
-          historyToolName,
-          historyToolInput,
-        }
-      case "command_status":
-        return {
-          toolName: "run_terminal_command",
-          input: {
-            command:
-              input.command ||
-              `echo "command_status unsupported for ${String(input.CommandId || input.commandId || input.command_id || "")}"`,
-            cwd: input.cwd || input.Cwd,
-            commandId: input.CommandId || input.commandId || input.command_id,
-            waitDurationSeconds:
-              input.WaitDurationSeconds ||
-              input.waitDurationSeconds ||
-              input.wait_duration_seconds,
-            outputCharacterCount:
-              input.OutputCharacterCount ||
-              input.outputCharacterCount ||
-              input.output_character_count,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "generate_image":
-        return {
-          toolName: "generate_image",
-          input: {
-            prompt: input.Prompt || input.prompt,
-            image_name: input.ImageName || input.imageName || input.image_name,
-            image_paths:
-              input.ImagePaths || input.imagePaths || input.image_paths,
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      case "browser_subagent":
-        return {
-          toolName: "task",
-          input: {
-            description:
-              input.Task ||
-              input.task ||
-              input.description ||
-              input.TaskSummary,
-            prompt: input.Task || input.task || input.description,
-            subagent_type: "browser",
-          },
-          historyToolName,
-          historyToolInput,
-        }
-      default:
-        return null
-    }
+    return canonicalizeOfficialAntigravityToolInvocationFromContract(
+      toolName,
+      input
+    )
   }
 
   private canonicalizeToolInvocation(
@@ -5154,6 +5054,95 @@ ${raw}
     return {
       toolName,
       input,
+    }
+  }
+
+  private resolveOfficialFirstViewFileWindow(
+    startLine?: number,
+    endLine?: number
+  ): { startLine?: number; endLine?: number } {
+    const enforcedWindowLines = 800
+
+    if (startLine == null && endLine == null) {
+      return { startLine: 1, endLine: enforcedWindowLines }
+    }
+
+    if (startLine != null && endLine != null) {
+      const requestedSpan = endLine - startLine + 1
+      if (requestedSpan >= enforcedWindowLines) {
+        return { startLine, endLine }
+      }
+      return {
+        startLine: Math.max(1, endLine - (enforcedWindowLines - 1)),
+        endLine,
+      }
+    }
+
+    if (endLine != null) {
+      return {
+        startLine: Math.max(1, endLine - (enforcedWindowLines - 1)),
+        endLine,
+      }
+    }
+
+    return {
+      startLine,
+      endLine: (startLine || 1) + (enforcedWindowLines - 1),
+    }
+  }
+
+  private enforceOfficialViewFileFirstReadWindow(
+    session: ChatSession,
+    invocation: CanonicalToolInvocation
+  ): CanonicalToolInvocation {
+    if (
+      invocation.toolName !== "read_file" ||
+      invocation.historyToolName !== "view_file"
+    ) {
+      return invocation
+    }
+
+    const filePath =
+      this.pickFirstString(invocation.input, ["path", "AbsolutePath"]) || ""
+    if (!filePath || session.readPaths.has(filePath)) {
+      return invocation
+    }
+
+    const requestedStartLine = this.pickFirstNumber(invocation.input, [
+      "start_line",
+      "startLine",
+      "StartLine",
+    ])
+    const requestedEndLine = this.pickFirstNumber(invocation.input, [
+      "end_line",
+      "endLine",
+      "EndLine",
+    ])
+    const expandedWindow = this.resolveOfficialFirstViewFileWindow(
+      requestedStartLine,
+      requestedEndLine
+    )
+
+    if (
+      expandedWindow.startLine === requestedStartLine &&
+      expandedWindow.endLine === requestedEndLine
+    ) {
+      return invocation
+    }
+
+    this.logger.debug(
+      `Expanded first official view_file window for ${filePath}: ` +
+        `${requestedStartLine ?? "?"}-${requestedEndLine ?? "?"} -> ` +
+        `${expandedWindow.startLine ?? "?"}-${expandedWindow.endLine ?? "?"}`
+    )
+
+    return {
+      ...invocation,
+      input: {
+        ...invocation.input,
+        start_line: expandedWindow.startLine,
+        end_line: expandedWindow.endLine,
+      },
     }
   }
 
@@ -5255,6 +5244,9 @@ ${raw}
       .replace(/^_+|_+$/g, "")
     const compact = toolName.toLowerCase().replace(/[^a-z0-9]+/g, "")
 
+    if (snake.includes("command_status") || compact.includes("commandstatus")) {
+      return "command_status"
+    }
     if (snake.includes("ask_question") || compact.includes("askquestion")) {
       return "ask_question"
     }
@@ -7535,6 +7527,7 @@ ${raw}
     toolName: string
   ): DeferredToolFamily | null {
     const DEFERRED_TOOL_MAP: Record<string, DeferredToolFamily> = {
+      command_status: "command_status",
       web_search: "web_search",
       web_fetch: "web_fetch",
       read_url_content: "read_url_content",
@@ -7578,6 +7571,240 @@ ${raw}
       content:
         "[generate_image error] image generation backend is not configured in this proxy runtime",
       state: { status: "error", message: "generate_image unsupported" },
+    }
+  }
+
+  private async findBackgroundCommandTranscriptPath(
+    command: SessionBackgroundCommand
+  ): Promise<string | undefined> {
+    const terminalsFolder = command.terminalsFolder?.trim()
+    if (!terminalsFolder) return undefined
+
+    try {
+      const fs = await import("fs/promises")
+      const entries = await fs.readdir(terminalsFolder, {
+        withFileTypes: true,
+      })
+      const commandId = command.commandId.trim()
+      if (!commandId) return undefined
+
+      const scoreEntry = (name: string): number => {
+        const normalized = name.toLowerCase()
+        if (
+          normalized === `${commandId}.txt` ||
+          normalized === `${commandId}.log`
+        ) {
+          return 5
+        }
+        if (
+          normalized.startsWith(`${commandId}.`) ||
+          normalized === commandId
+        ) {
+          return 4
+        }
+        if (normalized.includes(`-${commandId}.`)) {
+          return 3
+        }
+        if (normalized.includes(commandId)) {
+          return 2
+        }
+        return 0
+      }
+
+      const candidate = entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => ({
+          name: entry.name,
+          score: scoreEntry(entry.name),
+        }))
+        .filter((entry) => entry.score > 0)
+        .sort(
+          (left, right) =>
+            right.score - left.score || left.name.localeCompare(right.name)
+        )[0]
+
+      return candidate ? path.join(terminalsFolder, candidate.name) : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  private async refreshBackgroundCommandTerminalOutput(
+    conversationId: string,
+    commandId: string
+  ): Promise<SessionBackgroundCommand | undefined> {
+    let command = this.sessionManager.getBackgroundCommand(
+      conversationId,
+      commandId
+    )
+    if (!command) return undefined
+
+    const transcriptPath =
+      await this.findBackgroundCommandTranscriptPath(command)
+    if (!transcriptPath) return command
+
+    try {
+      const fs = await import("fs/promises")
+      const transcript = await fs.readFile(transcriptPath, "utf-8")
+      const existingOutputLength =
+        command.stdout.join("").length + command.stderr.join("").length
+
+      if (command.lastTerminalFileLength === undefined) {
+        this.sessionManager.updateBackgroundCommandTerminalFileLength(
+          conversationId,
+          commandId,
+          transcript.length
+        )
+        if (existingOutputLength === 0 && transcript.length > 0) {
+          this.sessionManager.appendBackgroundCommandOutput(
+            conversationId,
+            commandId,
+            "stdout",
+            transcript
+          )
+        }
+        return this.sessionManager.getBackgroundCommand(
+          conversationId,
+          commandId
+        )
+      }
+
+      if (transcript.length > command.lastTerminalFileLength) {
+        const delta = transcript.slice(command.lastTerminalFileLength)
+        if (delta) {
+          this.sessionManager.appendBackgroundCommandOutput(
+            conversationId,
+            commandId,
+            "stdout",
+            delta
+          )
+        }
+        this.sessionManager.updateBackgroundCommandTerminalFileLength(
+          conversationId,
+          commandId,
+          transcript.length
+        )
+      }
+    } catch {
+      return command
+    }
+
+    command = this.sessionManager.getBackgroundCommand(
+      conversationId,
+      commandId
+    )
+    return command
+  }
+
+  private async executeInlineCommandStatus(
+    conversationId: string,
+    input: Record<string, unknown>
+  ): Promise<{
+    content: string
+    state: { status: ToolResultStatus; message?: string }
+  }> {
+    const commandId =
+      this.pickFirstString(input, ["CommandId", "commandId", "command_id"]) ||
+      ""
+    if (!commandId) {
+      return {
+        content: "[command_status error] Missing required CommandId parameter",
+        state: { status: "error", message: "missing CommandId" },
+      }
+    }
+
+    const requestedOutputCharacterCount = this.pickFirstNumber(input, [
+      "OutputCharacterCount",
+      "outputCharacterCount",
+      "output_character_count",
+    ])
+    const outputCharacterCount = Math.max(
+      0,
+      Math.min(20000, requestedOutputCharacterCount ?? 4000)
+    )
+    const requestedWaitDurationSeconds = this.pickFirstNumber(input, [
+      "WaitDurationSeconds",
+      "waitDurationSeconds",
+      "wait_duration_seconds",
+    ])
+    const waitDurationSeconds = Math.max(
+      0,
+      Math.min(300, requestedWaitDurationSeconds ?? 0)
+    )
+
+    let command = this.sessionManager.getBackgroundCommand(
+      conversationId,
+      commandId
+    )
+    if (!command) {
+      return {
+        content: `[command_status error] Unknown CommandId: ${commandId}`,
+        state: { status: "error", message: "unknown CommandId" },
+      }
+    }
+
+    const deadline = Date.now() + waitDurationSeconds * 1000
+    do {
+      if (!command.terminalsFolder && command.status === "running") {
+        break
+      }
+      command =
+        (await this.refreshBackgroundCommandTerminalOutput(
+          conversationId,
+          commandId
+        )) || command
+      if (command.status !== "running" || Date.now() >= deadline) {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    } while (waitDurationSeconds > 0)
+
+    command =
+      this.sessionManager.getBackgroundCommand(conversationId, commandId) ||
+      command
+
+    const statusLine =
+      command.status === "running"
+        ? "running"
+        : command.status === "completed"
+          ? "done"
+          : command.status
+    const combinedOutput =
+      `${command.stdout.join("")}${command.stderr.length > 0 ? `\n[stderr]\n${command.stderr.join("")}` : ""}`.trim()
+    const outputTail =
+      outputCharacterCount > 0 && combinedOutput.length > outputCharacterCount
+        ? combinedOutput.slice(-outputCharacterCount)
+        : combinedOutput
+
+    const lines = [
+      "[command_status success]",
+      `CommandId: ${command.commandId}`,
+      `status: ${statusLine}`,
+    ]
+    if (command.command) {
+      lines.push(`command: ${command.command}`)
+    }
+    if (command.cwd) {
+      lines.push(`cwd: ${command.cwd}`)
+    }
+    if (typeof command.pid === "number") {
+      lines.push(`pid: ${command.pid}`)
+    }
+    if (typeof command.exitCode === "number") {
+      lines.push(`exit_code: ${command.exitCode}`)
+    }
+    if (combinedOutput.length > outputTail.length) {
+      lines.push(
+        `output_truncated: ${combinedOutput.length - outputTail.length} chars omitted`
+      )
+    }
+    if (outputTail) {
+      lines.push("", outputTail)
+    }
+
+    return {
+      content: lines.join("\n"),
+      state: { status: "success" },
     }
   }
 
@@ -8609,6 +8836,9 @@ ${raw}
     state: { status: ToolResultStatus; message?: string }
     projection?: ParsedToolResult["inlineProjection"]
   }> {
+    if (family === "command_status") {
+      return this.executeInlineCommandStatus(conversationId, input)
+    }
     if (family === "web_search" || family === "web_fetch") {
       return this.executeInlineWebTool(conversationId, toolName, input)
     }
@@ -8735,7 +8965,8 @@ ${raw}
     content: string,
     state: { status: ToolResultStatus; message?: string },
     inlineProjection?: ParsedToolResult["inlineProjection"],
-    resultCase = "inline_tool_result"
+    resultCase = "inline_tool_result",
+    inlineExtraData?: ParsedToolResult["inlineExtraData"]
   ): ParsedCursorRequest {
     return {
       conversation: [],
@@ -8755,6 +8986,7 @@ ${raw}
           inlineContent: content,
           inlineState: state,
           inlineProjection,
+          inlineExtraData,
         },
       ],
     }
@@ -8766,14 +8998,16 @@ ${raw}
     content: string,
     state: { status: ToolResultStatus; message?: string },
     inlineProjection?: ParsedToolResult["inlineProjection"],
-    resultCase = "inline_tool_result"
+    resultCase = "inline_tool_result",
+    inlineExtraData?: ParsedToolResult["inlineExtraData"]
   ): AsyncGenerator<Buffer> {
     const syntheticRequest = this.buildSyntheticInlineToolRequest(
       toolCallId,
       content,
       state,
       inlineProjection,
-      resultCase
+      resultCase,
+      inlineExtraData
     )
     yield* this.handleToolResult(conversationId, syntheticRequest)
   }
@@ -9578,20 +9812,22 @@ ${raw}
     toolCall: ActiveToolCall
   ): PreparedToolInvocation {
     const rawInput = this.parseToolInputJson(toolCall.inputJson)
-    const canonicalInvocation = this.canonicalizeToolInvocation(
-      toolCall.name,
-      rawInput
+    const canonicalInvocation = this.enforceOfficialViewFileFirstReadWindow(
+      session,
+      this.canonicalizeToolInvocation(toolCall.name, rawInput)
     )
     const canonicalToolName = canonicalInvocation.toolName
     const input = canonicalInvocation.input
-    const deferredToolFamily =
-      this.normalizeDeferredToolFamily(canonicalToolName)
     const execDispatchResolution = this.resolveExecDispatchTarget(
       session,
       canonicalToolName,
       input
     )
     const execDispatchTarget = execDispatchResolution.target
+    const deferredToolFamily =
+      execDispatchTarget && canonicalToolName === "generate_image"
+        ? undefined
+        : this.normalizeDeferredToolFamily(canonicalToolName)
 
     return {
       activeToolCall: toolCall,
@@ -9930,6 +10166,7 @@ ${raw}
       case "glob_search":
       case "web_search":
       case "web_fetch":
+      case "command_status":
         return true
       case "run_terminal_command":
       case "CLIENT_SIDE_TOOL_V2_RUN_TERMINAL_COMMAND_V2":
@@ -10146,8 +10383,8 @@ ${raw}
     input: Record<string, unknown>,
     dispatchTarget: ExecDispatchTarget
   ): Generator<Buffer> {
-    if (this.isEditToolInvocation(toolCall.name)) {
-      const typedInput = input as ToolInputWithPath
+    if (this.isEditToolInvocation(dispatchTarget.toolName)) {
+      const typedInput = dispatchTarget.input as ToolInputWithPath
       const readExecId = this.sessionManager.nextExecId(conversationId)
       const readExecMsg = this.grpcService.createReadExecMessage(
         toolCall.id,
@@ -11486,6 +11723,97 @@ ${raw}
     return false
   }
 
+  private handleBackgroundCommandShellStreamEvent(
+    conversationId: string,
+    toolCallId: string,
+    execNumericId: number | undefined,
+    resultData: Buffer
+  ): boolean {
+    let shellStream: ShellStream
+    try {
+      const execMsg = fromBinary(ExecClientMessageSchema, resultData)
+      if (execMsg.message.case !== "shellStream") {
+        return false
+      }
+      shellStream = execMsg.message.value
+    } catch {
+      return false
+    }
+
+    const backgroundCommand =
+      this.sessionManager.findBackgroundCommandByToolCallId(
+        conversationId,
+        toolCallId
+      ) ||
+      (execNumericId
+        ? this.sessionManager.findBackgroundCommandByExecId(
+            conversationId,
+            execNumericId
+          )
+        : undefined)
+    if (!backgroundCommand) {
+      return false
+    }
+
+    switch (shellStream.event.case) {
+      case "stdout":
+        if (shellStream.event.value.data) {
+          this.sessionManager.appendBackgroundCommandOutput(
+            conversationId,
+            backgroundCommand.commandId,
+            "stdout",
+            shellStream.event.value.data
+          )
+        }
+        return true
+      case "stderr":
+        if (shellStream.event.value.data) {
+          this.sessionManager.appendBackgroundCommandOutput(
+            conversationId,
+            backgroundCommand.commandId,
+            "stderr",
+            shellStream.event.value.data
+          )
+        }
+        return true
+      case "exit":
+        this.sessionManager.setBackgroundCommandExit(
+          conversationId,
+          backgroundCommand.commandId,
+          shellStream.event.value.code ?? 0,
+          Boolean(shellStream.event.value.aborted)
+        )
+        return true
+      case "rejected":
+      case "permissionDenied": {
+        const message =
+          (shellStream.event.value as { reason?: string; error?: string })
+            .reason ||
+          (shellStream.event.value as { reason?: string; error?: string })
+            .error ||
+          "background command failed"
+        this.sessionManager.appendBackgroundCommandOutput(
+          conversationId,
+          backgroundCommand.commandId,
+          "stderr",
+          message
+        )
+        this.sessionManager.setBackgroundCommandExit(
+          conversationId,
+          backgroundCommand.commandId,
+          126,
+          false
+        )
+        return true
+      }
+      case "backgrounded":
+      case "start":
+        return true
+      default:
+        return false
+    }
+  }
+
   private async *handleShellStreamEvent(
     conversationId: string,
     toolCallId: string,
@@ -11617,7 +11945,79 @@ ${raw}
 
     if (eventCase === "backgrounded") {
       this.logger.debug(`Shell stream backgrounded for ${toolCallId}`)
-      // Don't complete the tool call, it continues in background
+      const backgroundEvent = shellStream.event.value as {
+        shellId: number
+        command?: string
+        workingDirectory?: string
+        pid?: number
+        msToWait?: number
+        reason?: number
+      }
+      const shellOutput = this.sessionManager.getShellOutput(
+        conversationId,
+        toolCallId
+      )
+      const commandId = String(backgroundEvent.shellId)
+      const stdout = shellOutput?.stdout || ""
+      const stderr = shellOutput?.stderr || ""
+      const combinedOutput =
+        `${stdout}${stderr ? `\n[stderr]\n${stderr}` : ""}`.trim()
+      const pendingToolCall = session.pendingToolCalls.get(toolCallId)
+      if (!pendingToolCall) {
+        this.logger.warn(
+          `No pending tool call found for backgrounded shell stream: ${toolCallId}`
+        )
+        return
+      }
+
+      this.sessionManager.registerBackgroundCommand(conversationId, {
+        commandId,
+        originToolCallId: toolCallId,
+        execIds: pendingToolCall.execIds,
+        command:
+          backgroundEvent.command ||
+          this.pickShellCommand(pendingToolCall.toolInput) ||
+          "",
+        cwd:
+          backgroundEvent.workingDirectory ||
+          this.pickFirstString(pendingToolCall.toolInput, [
+            "cwd",
+            "Cwd",
+            "working_directory",
+            "workingDirectory",
+          ]) ||
+          "",
+        pid: backgroundEvent.pid,
+        terminalsFolder: session.requestContextEnv?.terminalsFolder,
+        stdout,
+        stderr,
+        msToWait: backgroundEvent.msToWait,
+        backgroundReason: backgroundEvent.reason,
+      })
+
+      const content =
+        combinedOutput ||
+        `Command running in background (CommandId: ${commandId})`
+      yield* this.emitInlineToolResult(
+        conversationId,
+        toolCallId,
+        content,
+        { status: "success" },
+        undefined,
+        undefined,
+        {
+          shellResult: {
+            stdout,
+            stderr,
+            shellId: backgroundEvent.shellId,
+            pid: backgroundEvent.pid,
+            msToWait: backgroundEvent.msToWait,
+            backgroundReason: backgroundEvent.reason,
+            terminalsFolder: session.requestContextEnv?.terminalsFolder,
+            isBackground: true,
+          },
+        }
+      )
       return
     }
 
@@ -11944,6 +12344,19 @@ ${raw}
       }
     }
 
+    if (toolResult.resultCase === "shell_stream") {
+      const handledBackgroundShellEvent =
+        this.handleBackgroundCommandShellStreamEvent(
+          conversationId,
+          toolCallId || "",
+          execNumericId,
+          toolResult.resultData
+        )
+      if (handledBackgroundShellEvent) {
+        return
+      }
+    }
+
     if (!toolCallId) {
       const reason = `tool result missing toolCallId (execId=${execNumericId || "(none)"})`
       yield* this.failPendingToolCallsWithProtocolError(conversationId, reason)
@@ -12062,8 +12475,11 @@ ${raw}
           )
           editPending.editApplyWarning = computedEdit.warning
           if (computedEdit.warning) {
+            const editInputSummary =
+              this.summarizeEditToolInputForLogs(typedInput)
             this.logger.warn(
-              `Edit apply warning for ${editPending.toolCallId}: ${computedEdit.warning}`
+              `Edit apply warning for ${editPending.toolCallId}: ${computedEdit.warning}` +
+                (editInputSummary ? ` | ${editInputSummary}` : "")
             )
             if (computedEdit.fileText === editPending.beforeContent) {
               this.logger.warn(
@@ -12129,14 +12545,31 @@ ${raw}
 
     // Format tool result content
     const rawToolResultContent = this.formatToolResult(toolResult)
+    let toolResultState = this.deriveToolResultState(toolResult)
+    if (
+      toolResult.resultCase === "read_result" &&
+      pendingToolCall.editApplyWarning
+    ) {
+      toolResultState = {
+        status: "error",
+        message: pendingToolCall.editApplyWarning,
+      }
+    }
     let toolResultContent = this.adaptToolResultForContext(
       pendingToolCall.toolName,
       pendingToolCall.toolInput,
       rawToolResultContent
     )
-    let toolResultState = this.deriveToolResultState(toolResult)
     const parsedShellResult = this.extractShellResultPayload(toolResult)
-    if (pendingToolCall.editApplyWarning) {
+    const inlineShellResult =
+      (toolResult.inlineExtraData?.shellResult as
+        | ToolCompletedExtraData["shellResult"]
+        | undefined) || undefined
+    const effectiveShellResult = parsedShellResult || inlineShellResult
+    if (
+      pendingToolCall.editApplyWarning &&
+      toolResultState?.status === "success"
+    ) {
       toolResultContent =
         `${toolResultContent}\n\n` +
         `[edit_apply_warning] ${pendingToolCall.editApplyWarning}`
@@ -12157,27 +12590,27 @@ ${raw}
       // Emit start event so Cursor UI expands the shell panel
       yield this.grpcService.createShellOutputStartResponse()
 
-      if (parsedShellResult?.stdout) {
+      if (effectiveShellResult?.stdout) {
         this.logger.debug(
-          `Agent mode: sending shell stdout delta (${parsedShellResult.stdout.length} chars)`
+          `Agent mode: sending shell stdout delta (${effectiveShellResult.stdout.length} chars)`
         )
         yield this.grpcService.createShellOutputStdoutResponse(
-          parsedShellResult.stdout
+          effectiveShellResult.stdout
         )
       }
 
-      if (parsedShellResult?.stderr) {
+      if (effectiveShellResult?.stderr) {
         this.logger.debug(
-          `Agent mode: sending shell stderr delta (${parsedShellResult.stderr.length} chars)`
+          `Agent mode: sending shell stderr delta (${effectiveShellResult.stderr.length} chars)`
         )
         yield this.grpcService.createShellOutputStderrResponse(
-          parsedShellResult.stderr
+          effectiveShellResult.stderr
         )
       }
 
       if (
-        !parsedShellResult?.stdout &&
-        !parsedShellResult?.stderr &&
+        !effectiveShellResult?.stdout &&
+        !effectiveShellResult?.stderr &&
         toolResultContent.length > 0
       ) {
         this.logger.debug(
@@ -12188,17 +12621,18 @@ ${raw}
         )
       }
 
-      // Emit exit event
-      yield this.grpcService.createShellOutputExitResponse(
-        parsedShellResult?.exitCode ?? 0,
-        Boolean(parsedShellResult?.aborted),
-        "",
-        {
-          outputLocation: parsedShellResult?.outputLocation,
-          abortReason: parsedShellResult?.abortReason,
-          localExecutionTimeMs: parsedShellResult?.localExecutionTimeMs,
-        }
-      )
+      if (!effectiveShellResult?.isBackground) {
+        yield this.grpcService.createShellOutputExitResponse(
+          effectiveShellResult?.exitCode ?? 0,
+          Boolean(effectiveShellResult?.aborted),
+          "",
+          {
+            outputLocation: effectiveShellResult?.outputLocation,
+            abortReason: effectiveShellResult?.abortReason,
+            localExecutionTimeMs: effectiveShellResult?.localExecutionTimeMs,
+          }
+        )
+      }
     } else if (this.isEditToolInvocation(pendingToolCall.toolName)) {
       // For edit tools, avoid replaying the full replacement text as a live delta.
       // Cursor can render this as a brand-new unnamed buffer / full-file rewrite.
@@ -12221,6 +12655,12 @@ ${raw}
     let extraData: ToolCompletedExtraData | undefined
     if (toolResultState) {
       extraData = { toolResultState }
+    }
+    if (toolResult.inlineExtraData) {
+      extraData = {
+        ...(extraData || {}),
+        ...(toolResult.inlineExtraData as Partial<ToolCompletedExtraData>),
+      }
     }
     if (toolResult.inlineProjection?.askQuestionResult) {
       extraData = {
@@ -12262,7 +12702,12 @@ ${raw}
           ? projected.markdown
           : toolResultContent
     }
-    if (this.isEditToolInvocation(pendingToolCall.toolName)) {
+    const shouldBuildEditPreview =
+      this.isEditToolInvocation(pendingToolCall.toolName) &&
+      toolResultState?.status === "success" &&
+      !pendingToolCall.editApplyWarning
+
+    if (shouldBuildEditPreview) {
       try {
         const fs = await import("fs/promises")
         const toolInput = pendingToolCall.toolInput as ToolInputWithPath
@@ -12315,6 +12760,10 @@ ${raw}
           afterContent: "",
         }
       }
+    } else if (this.isEditToolInvocation(pendingToolCall.toolName)) {
+      this.logger.debug(
+        `Skipping edit diff payload for ${pendingToolCall.toolCallId} because the edit did not complete successfully`
+      )
     } else if (
       pendingToolCall.toolName === "read_file" ||
       pendingToolCall.toolName === "read_file_v2"
@@ -12334,32 +12783,32 @@ ${raw}
       pendingToolCall.toolName === "run_command"
     ) {
       // Extract ShellResult details for correct UI display
-      if (parsedShellResult) {
+      if (effectiveShellResult) {
         extraData = {
           ...(extraData || {}),
           shellResult: {
-            stdout: parsedShellResult.stdout || toolResultContent,
-            stderr: parsedShellResult.stderr,
-            exitCode: parsedShellResult.exitCode,
-            outputLocation: parsedShellResult.outputLocation,
-            abortReason: parsedShellResult.abortReason,
-            localExecutionTimeMs: parsedShellResult.localExecutionTimeMs,
-            interleavedOutput: parsedShellResult.interleavedOutput,
-            pid: parsedShellResult.pid,
-            shellId: parsedShellResult.shellId,
-            terminalsFolder: parsedShellResult.terminalsFolder,
-            requestedSandboxPolicy: parsedShellResult.requestedSandboxPolicy,
-            isBackground: parsedShellResult.isBackground,
-            description: parsedShellResult.description,
-            classifierResult: parsedShellResult.classifierResult,
-            closeStdin: parsedShellResult.closeStdin,
+            stdout: effectiveShellResult.stdout || toolResultContent,
+            stderr: effectiveShellResult.stderr,
+            exitCode: effectiveShellResult.exitCode,
+            outputLocation: effectiveShellResult.outputLocation,
+            abortReason: effectiveShellResult.abortReason,
+            localExecutionTimeMs: effectiveShellResult.localExecutionTimeMs,
+            interleavedOutput: effectiveShellResult.interleavedOutput,
+            pid: effectiveShellResult.pid,
+            shellId: effectiveShellResult.shellId,
+            terminalsFolder: effectiveShellResult.terminalsFolder,
+            requestedSandboxPolicy: effectiveShellResult.requestedSandboxPolicy,
+            isBackground: effectiveShellResult.isBackground,
+            description: effectiveShellResult.description,
+            classifierResult: effectiveShellResult.classifierResult,
+            closeStdin: effectiveShellResult.closeStdin,
             fileOutputThresholdBytes:
-              parsedShellResult.fileOutputThresholdBytes,
-            hardTimeout: parsedShellResult.hardTimeout,
-            timeoutBehavior: parsedShellResult.timeoutBehavior,
-            msToWait: parsedShellResult.msToWait,
-            backgroundReason: parsedShellResult.backgroundReason,
-            aborted: parsedShellResult.aborted,
+              effectiveShellResult.fileOutputThresholdBytes,
+            hardTimeout: effectiveShellResult.hardTimeout,
+            timeoutBehavior: effectiveShellResult.timeoutBehavior,
+            msToWait: effectiveShellResult.msToWait,
+            backgroundReason: effectiveShellResult.backgroundReason,
+            aborted: effectiveShellResult.aborted,
           },
         }
       }
@@ -12623,6 +13072,22 @@ ${raw}
       )
     }
 
+    if (
+      pendingToolCall.toolName === "write_shell_stdin" ||
+      pendingToolCall.historyToolName === "send_command_input"
+    ) {
+      const shellId = extraData?.writeShellStdinSuccess?.shellId
+      const terminalLength =
+        extraData?.writeShellStdinSuccess?.terminalFileLengthBeforeInputWritten
+      if (typeof shellId === "number" && typeof terminalLength === "number") {
+        this.sessionManager.updateBackgroundCommandTerminalFileLength(
+          conversationId,
+          String(shellId),
+          terminalLength
+        )
+      }
+    }
+
     const artifactUiProjection =
       pendingToolCall.toolName === "edit_file_v2" ||
       pendingToolCall.toolName === "edit"
@@ -12682,7 +13147,8 @@ ${raw}
       historyToolName,
       historyToolInput,
       toolResultContent,
-      toolResultState
+      toolResultState,
+      extraData
     )
     // Persist tool_result before any supersession return. At this point the
     // pending tool call has already been consumed, so dropping the history

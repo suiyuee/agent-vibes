@@ -84,6 +84,24 @@ export interface ParsedToolResult {
       markdown?: string
     }
   }
+  inlineExtraData?: {
+    shellResult?: {
+      stdout?: string
+      stderr?: string
+      exitCode?: number
+      shellId?: number
+      pid?: number
+      msToWait?: number
+      terminalsFolder?: string
+      backgroundReason?: number
+      isBackground?: boolean
+      aborted?: boolean
+    }
+    writeShellStdinSuccess?: {
+      shellId?: number
+      terminalFileLengthBeforeInputWritten?: number
+    }
+  }
 }
 
 // MCP 工具定义（从 Cursor 协议 McpToolDefinition 解析）
@@ -170,6 +188,16 @@ export interface ParsedCursorRequest {
 
   // 显式上下文
   explicitContext?: string
+
+  // RequestContext.env 中的运行时目录/环境元数据
+  requestContextEnv?: {
+    terminalsFolder?: string
+    projectFolder?: string
+    shell?: string
+    timeZone?: string
+    agentTranscriptsFolder?: string
+    artifactsFolder?: string
+  }
 
   // 附加图片（从 selectedContext.selectedImages 解析）
   attachedImages?: AttachedImage[]
@@ -1309,6 +1337,19 @@ export class CursorRequestParser {
     const useWeb =
       requestContext?.webSearchEnabled === true ||
       requestContext?.webFetchEnabled === true
+    const requestContextEnv = requestContext?.env
+      ? {
+          terminalsFolder:
+            requestContext.env.terminalsFolder?.trim() || undefined,
+          projectFolder: requestContext.env.projectFolder?.trim() || undefined,
+          shell: requestContext.env.shell?.trim() || undefined,
+          timeZone: requestContext.env.timeZone?.trim() || undefined,
+          agentTranscriptsFolder:
+            requestContext.env.agentTranscriptsFolder?.trim() || undefined,
+          artifactsFolder:
+            requestContext.env.artifactsFolder?.trim() || undefined,
+        }
+      : undefined
 
     if (prompt) {
       this.logger.log(
@@ -1398,6 +1439,7 @@ export class CursorRequestParser {
           usedContextTokens,
           requestedMaxOutputTokens,
           requestedModelParameters,
+          requestContextEnv,
           isResumeAction: true,
           resumePendingToolCallIds:
             req.conversationState?.pendingToolCalls || [],
@@ -1442,6 +1484,7 @@ export class CursorRequestParser {
       usedContextTokens,
       requestedMaxOutputTokens,
       requestedModelParameters,
+      requestContextEnv,
       mcpToolDefs: mcpToolDefs.length > 0 ? mcpToolDefs : undefined,
       attachedImages: attachedImages.length > 0 ? attachedImages : undefined,
     }
