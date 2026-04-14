@@ -261,6 +261,8 @@ type InlineWebToolFamily = "web_search" | "web_fetch"
 type DeferredToolFamily =
   | InlineWebToolFamily
   | "command_status"
+  | "read_todos"
+  | "update_todos"
   | "get_mcp_tools"
   | "read_url_content"
   | "view_content_chunk"
@@ -6084,16 +6086,6 @@ ${raw}
           `(${totalLines} line(s)). Re-run with a valid StartLine/EndLine range.`,
       }
     }
-    if (normalizedRequestedEnd != null && normalizedRequestedEnd > totalLines) {
-      return {
-        startLine: totalLines,
-        endLine: totalLines,
-        validationErrorMessage:
-          `view_file EndLine ${normalizedRequestedEnd} is outside this file ` +
-          `(${totalLines} line(s)). Re-run with a valid StartLine/EndLine range.`,
-      }
-    }
-
     const candidateWindow = this.buildOfficialViewFileCandidateWindow(
       totalLines,
       normalizedRequestedStart,
@@ -6366,6 +6358,10 @@ ${raw}
         case "CLIENT_SIDE_TOOL_V2_ASK_QUESTION":
         case "CLIENT_SIDE_TOOL_V2_ASK_FOLLOWUP_QUESTION":
           return "ask_question"
+        case "CLIENT_SIDE_TOOL_V2_TODO_READ":
+          return "read_todos"
+        case "CLIENT_SIDE_TOOL_V2_TODO_WRITE":
+          return "update_todos"
         case "CLIENT_SIDE_TOOL_V2_CREATE_PLAN":
           return "create_plan"
         case "CLIENT_SIDE_TOOL_V2_SWITCH_MODE":
@@ -6433,6 +6429,12 @@ ${raw}
     }
     if (snake.includes("ask_question") || compact.includes("askquestion")) {
       return "ask_question"
+    }
+    if (snake.includes("read_todos") || compact.includes("readtodos")) {
+      return "read_todos"
+    }
+    if (snake.includes("update_todos") || compact.includes("updatetodos")) {
+      return "update_todos"
     }
     if (snake.includes("create_plan") || compact.includes("createplan")) {
       return "create_plan"
@@ -10170,6 +10172,12 @@ ${raw}
     if (family === "command_status") {
       return this.executeInlineCommandStatus(conversationId, input)
     }
+    if (family === "read_todos") {
+      return Promise.resolve(this.executeInlineTodoRead(conversationId, input))
+    }
+    if (family === "update_todos") {
+      return Promise.resolve(this.executeInlineTodoWrite(conversationId, input))
+    }
     if (family === "web_search" || family === "web_fetch") {
       return this.executeInlineWebTool(conversationId, toolName, input)
     }
@@ -10198,12 +10206,6 @@ ${raw}
       return Promise.resolve(
         this.executeInlineGetMcpTools(conversationId, input)
       )
-    }
-    if (family === "todo_read") {
-      return this.executeInlineTodoRead(conversationId, input)
-    }
-    if (family === "todo_write") {
-      return this.executeInlineTodoWrite(conversationId, input)
     }
     if (family === "task") {
       // Sub-agent is handled via the async generator path in runDeferredToolIfNeeded,

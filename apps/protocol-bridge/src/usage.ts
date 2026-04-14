@@ -307,7 +307,18 @@ export class UsageStatsService implements OnModuleInit {
       .prepare(
         `SELECT
            date(recorded_at / 1000, 'unixepoch', 'localtime') as day,
-           COUNT(*) as requests,
+           SUM(
+             CASE
+               WHEN input_tokens = 0
+                 AND cached_input_tokens = 0
+                 AND cache_creation_input_tokens = 0
+                 AND output_tokens = 0
+                 AND web_search_requests = 0
+                 AND (error_429_count > 0 OR error_503_count > 0)
+               THEN 0
+               ELSE 1
+             END
+           ) as requests,
            SUM(input_tokens) as input_tokens,
            SUM(cached_input_tokens) as cached_input_tokens,
            SUM(cache_creation_input_tokens) as cache_creation_input_tokens,
@@ -692,10 +703,13 @@ export class UsageStatsService implements OnModuleInit {
       recordedAt: number
     }
   ): void {
-    bucket.requests += 1
     bucket.totalAttempts += 1
-    if (values.cachedInputTokens > 0) {
-      bucket.cachedRequests += 1
+    if (this.shouldCountUsageRecordAsRequest(values)) {
+      bucket.requests += 1
+      if (values.cachedInputTokens > 0) {
+        bucket.cachedRequests += 1
+      }
+      bucket.totalDurationMs += values.durationMs
     }
     bucket.inputTokens += values.inputTokens
     bucket.cachedInputTokens += values.cachedInputTokens
@@ -704,8 +718,27 @@ export class UsageStatsService implements OnModuleInit {
     bucket.webSearchRequests += values.webSearchRequests
     bucket.error429Count += values.error429Count
     bucket.error503Count += values.error503Count
-    bucket.totalDurationMs += values.durationMs
     bucket.lastSeenAt = values.recordedAt
+  }
+
+  private shouldCountUsageRecordAsRequest(values: {
+    inputTokens: number
+    cachedInputTokens: number
+    cacheCreationInputTokens: number
+    outputTokens: number
+    webSearchRequests: number
+    error429Count: number
+    error503Count: number
+  }): boolean {
+    const isRetryableErrorOnlyAttempt =
+      values.inputTokens === 0 &&
+      values.cachedInputTokens === 0 &&
+      values.cacheCreationInputTokens === 0 &&
+      values.outputTokens === 0 &&
+      values.webSearchRequests === 0 &&
+      (values.error429Count > 0 || values.error503Count > 0)
+
+    return !isRetryableErrorOnlyAttempt
   }
 
   private toBackendSummary(
