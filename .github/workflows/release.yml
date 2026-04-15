@@ -40,7 +40,26 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            echo "npm ci attempt ${attempt}/3"
+            if npm ci; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "npm ci failed after ${attempt} attempts"
+              exit 1
+            fi
+
+            echo "npm ci failed, cleaning workspace before retry"
+            rm -rf node_modules
+            npm cache clean --force || true
+            sleep $((attempt * 5))
+          done
 
       - name: Build SEA binary (Unix)
         if: runner.os != 'Windows'
@@ -148,7 +167,26 @@ jobs:
           go-version-file: apps/protocol-bridge/src/llm/google/go-worker/go.mod
 
       - name: Install dependencies
-        run: npm ci
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for attempt in 1 2 3; do
+            echo "npm ci attempt ${attempt}/3"
+            if npm ci; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 3 ]; then
+              echo "npm ci failed after ${attempt} attempts"
+              exit 1
+            fi
+
+            echo "npm ci failed, cleaning workspace before retry"
+            rm -rf node_modules
+            npm cache clean --force || true
+            sleep $((attempt * 5))
+          done
 
       - name: Download all bridge artifacts
         uses: actions/download-artifact@v4
