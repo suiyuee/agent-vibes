@@ -104,6 +104,20 @@ class OutputConfigDto {
   effort?: string
 }
 
+export type ThinkingIntentEffort =
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+
+export type ThinkingIntent =
+  | { mode: "disabled" }
+  | { mode: "adaptive"; effort?: ThinkingIntentEffort }
+  | { mode: "explicit_effort"; effort: ThinkingIntentEffort }
+  | { mode: "explicit_budget"; budgetTokens: number }
+
 export class CreateMessageDto {
   @ApiProperty({ example: "gemini-2.5-flash" })
   @IsString()
@@ -236,4 +250,28 @@ export class CreateMessageDto {
   @IsArray()
   @IsString({ each: true })
   _pendingToolUseIds?: string[]
+
+  /**
+   * Internal count of leading context messages that must survive any
+   * backend-side payload shrink pass.
+   */
+  @IsOptional()
+  @IsNumber()
+  _protectedContextMessageCount?: number
+
+  /**
+   * Internal backend-agnostic thinking intent.
+   * Cursor-side thinking semantics are captured here first, then each backend
+   * serializes them into its own wire format.
+   */
+  @IsOptional()
+  _thinkingIntent?: ThinkingIntent
+
+  /**
+   * Internal original model identifier before backend routing canonicalizes it.
+   * This keeps suffix-style thinking hints attached to the original request.
+   */
+  @IsOptional()
+  @IsString()
+  _requestedModel?: string
 }

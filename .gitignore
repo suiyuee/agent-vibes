@@ -25,11 +25,6 @@ apps/protocol-bridge/data/accounts.json
 apps/protocol-bridge/data/accounts.local.json
 apps/protocol-bridge/data/*-accounts.json
 apps/protocol-bridge/data/*-account-state.json
-.runtime/
-data/accounts.json
-data/accounts.local.json
-data/*-accounts.json
-data/*-account-state.json
 apps/protocol-bridge/proto/
 scripts/cursor/
 backups/
@@ -42,3 +37,11 @@ scripts/capture/antigravity_traffic.log
 *.pem
 *.sqlite
 *.sqlite-journal
+
+# Extension build artifacts
+apps/vscode-extension/README.md
+apps/vscode-extension/*.vsix
+apps/vscode-extension/bridge/**
+!apps/vscode-extension/bridge/
+!apps/vscode-extension/bridge/README.md
+

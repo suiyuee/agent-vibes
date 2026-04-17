@@ -6,13 +6,18 @@
  * Usage:
  *   npm run antigravity:sync -- --ide       Extract from Antigravity IDE (state.vscdb)
  *   npm run antigravity:sync -- --tools     Extract from Antigravity Tools (~/.antigravity_tools)
+ *   npm run antigravity:sync -- --ide --accounts-file /abs/path/antigravity-accounts.json
  */
 
-const Database = require("better-sqlite3")
+const { DatabaseSync } = require("node:sqlite")
 const fs = require("fs")
 const path = require("path")
 const os = require("os")
 const platform = require("../lib/platform")
+const {
+  formatPathForDisplay,
+  resolveDefaultAccountConfigPath,
+} = require("./lib/account-config-paths")
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -32,13 +37,14 @@ if (!mode) {
 }
 
 // ---------------------------------------------------------------------------
-// Output path — always apps/protocol-bridge/data/antigravity-accounts.json
+// Output path — default unified runtime path, override with --accounts-file
 // ---------------------------------------------------------------------------
 
 const PROJECT_ROOT = path.resolve(__dirname, "../..")
-const DEST_FILE = path.join(
+const DEST_FILE = resolveDefaultAccountConfigPath(
   PROJECT_ROOT,
-  "apps/protocol-bridge/data/antigravity-accounts.json"
+  "antigravity-accounts.json",
+  args
 )
 
 // ---------------------------------------------------------------------------
@@ -47,6 +53,82 @@ const DEST_FILE = path.join(
 
 function expand(p) {
   return p.startsWith("~") ? path.join(os.homedir(), p.slice(1)) : p
+}
+
+function extractEnterpriseGcpProjectId(encodedValue) {
+  if (!encodedValue || !encodedValue.trim()) return undefined
+
+  try {
+    const decoded = Buffer.from(encodedValue.trim(), "base64").toString("utf8")
+    if (!decoded.includes("enterpriseGcpProjectId")) {
+      return undefined
+    }
+
+    const candidates = [
+      decoded,
+      ...(decoded.match(/[A-Za-z0-9+/=]{4,}/g) || []).map((value) => {
+        try {
+          return Buffer.from(value, "base64").toString("utf8")
+        } catch {
+          return ""
+        }
+      }),
+    ]
+
+    for (const candidate of candidates) {
+      const matches = candidate.match(/\b[a-z][a-z0-9-]{4,}\b/g) || []
+      for (const match of matches) {
+        if (match !== "enterpriseGcpProjectId") {
+          return match
+        }
+      }
+    }
+  } catch {
+    return undefined
+  }
+
+  return undefined
+}
+
+function extractUserStatus(encodedValue) {
+  let decoded = ""
+  try {
+    decoded = Buffer.from(encodedValue, "base64").toString("utf8")
+  } catch {
+    console.error("❌ Invalid Antigravity IDE user status payload")
+    process.exit(1)
+  }
+
+  const blocks = decoded.match(/[A-Za-z0-9+/=]{20,}/g) || []
+  for (const block of blocks) {
+    try {
+      const candidate = Buffer.from(block, "base64").toString("utf8")
+      const emailMatch = candidate.match(
+        /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i
+      )
+      if (!emailMatch || !emailMatch[0]) {
+        continue
+      }
+
+      const email = emailMatch[0].trim().toLowerCase()
+      const prefix = candidate.slice(0, emailMatch.index || 0)
+      const segments = prefix
+        .split(":")
+        .map((value) => value.trim())
+        .filter(Boolean)
+      const rawName = segments.length > 0 ? segments[segments.length - 1] : null
+      const sanitizedName = rawName
+        ? rawName.replace(/[^\p{L}\p{N} ._'’-]/gu, "").trim()
+        : ""
+
+      return { email, name: sanitizedName || null }
+    } catch (_) {
+      // skip invalid block
+    }
+  }
+
+  console.error("❌ Invalid Antigravity IDE user status payload: missing email")
+  process.exit(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -62,16 +144,19 @@ function fromIDE() {
     process.exit(1)
   }
 
-  const db = new Database(DB, { readonly: true, fileMustExist: true })
-  let authRaw = ""
+  const db = new DatabaseSync(DB, { open: true, readOnly: true })
+  let userStatusB64 = ""
   let oauthB64 = ""
+  let enterprisePreferencesB64 = ""
 
   try {
-    const authRow = db
+    const userStatusRow = db
       .prepare("SELECT value FROM ItemTable WHERE key = ?")
-      .get("antigravityAuthStatus")
-    authRaw =
-      authRow && typeof authRow.value === "string" ? authRow.value.trim() : ""
+      .get("antigravityUnifiedStateSync.userStatus")
+    userStatusB64 =
+      userStatusRow && typeof userStatusRow.value === "string"
+        ? userStatusRow.value.trim()
+        : ""
 
     const oauthRow = db
       .prepare("SELECT value FROM ItemTable WHERE key = ?")
@@ -80,20 +165,27 @@ function fromIDE() {
       oauthRow && typeof oauthRow.value === "string"
         ? oauthRow.value.trim()
         : ""
+
+    const enterprisePreferencesRow = db
+      .prepare("SELECT value FROM ItemTable WHERE key = ?")
+      .get("antigravityUnifiedStateSync.enterprisePreferences")
+    enterprisePreferencesB64 =
+      enterprisePreferencesRow &&
+      typeof enterprisePreferencesRow.value === "string"
+        ? enterprisePreferencesRow.value.trim()
+        : ""
   } finally {
     db.close()
   }
 
-  if (!authRaw) {
-    console.error("❌ Not logged in — no antigravityAuthStatus found")
+  if (!userStatusB64) {
+    console.error(
+      "❌ Not logged in — no antigravityUnifiedStateSync.userStatus found"
+    )
     process.exit(1)
   }
 
-  const auth = JSON.parse(authRaw)
-  if (!auth.email) {
-    console.error("❌ No email in antigravityAuthStatus")
-    process.exit(1)
-  }
+  const userStatus = extractUserStatus(userStatusB64)
 
   if (!oauthB64) {
     console.error("❌ No OAuth token found in state.vscdb")
@@ -129,11 +221,24 @@ function fromIDE() {
     process.exit(1)
   }
 
-  console.log(`✅ ${auth.name} <${auth.email}>`)
+  const quotaProjectId = extractEnterpriseGcpProjectId(enterprisePreferencesB64)
+
+  console.log(`✅ ${userStatus.name || "Unknown User"} <${userStatus.email}>`)
   console.log(`   Access Token: ${accessToken.substring(0, 25)}...`)
   console.log(`   Refresh Token: ${refreshToken.substring(0, 15)}...`)
+  if (quotaProjectId) {
+    console.log(`   Quota Project: ${quotaProjectId}`)
+  }
 
-  return [{ email: auth.email, accessToken, refreshToken, isGcpTos: false }]
+  return [
+    {
+      email: userStatus.email,
+      accessToken,
+      refreshToken,
+      quotaProjectId,
+      isGcpTos: false,
+    },
+  ]
 }
 
 // ---------------------------------------------------------------------------
@@ -182,7 +287,7 @@ function fromTools() {
         accessToken: token.access_token,
         refreshToken: token.refresh_token,
         expiresAt,
-        projectId: token.project_id,
+        quotaProjectId: token.project_id,
       })
 
       console.log(`✅ ${file.email}`)
@@ -210,4 +315,6 @@ const accounts = mode === "--ide" ? fromIDE() : fromTools()
 fs.mkdirSync(path.dirname(DEST_FILE), { recursive: true })
 fs.writeFileSync(DEST_FILE, JSON.stringify({ accounts }, null, 2), "utf-8")
 
-console.log(`\n✅ Synced ${accounts.length} account(s) to ${DEST_FILE}`)
+console.log(
+  `\n✅ Synced ${accounts.length} account(s) to ${formatPathForDisplay(PROJECT_ROOT, DEST_FILE)}`
+)

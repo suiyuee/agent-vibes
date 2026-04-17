@@ -10,7 +10,7 @@ import { TokenCounterService } from "./token-counter.service"
 import {
   enforceToolProtocol,
   type EnforceToolProtocolOptions,
-} from "./message-integrity-guard"
+} from "./tool-protocol-integrity"
 
 /**
  * Result of sanitizeMessages operation
@@ -233,9 +233,14 @@ export class ToolIntegrityService {
    */
   findTruncationPointWithIntegrity(
     messages: UnifiedMessage[],
-    targetTokens: number
+    targetTokens: number,
+    options?: {
+      mode?: EnforceToolProtocolOptions["mode"]
+    }
   ): number {
     if (messages.length === 0) return 0
+
+    const mode = options?.mode ?? "global"
 
     // Step 1: Find initial truncation point based on tokens
     let truncationIndex = this.tokenCounter.findTruncationIndex(
@@ -265,11 +270,17 @@ export class ToolIntegrityService {
         }
       }
 
-      // Find orphaned tool_results in retained messages
-      const orphans = this.findOrphanedToolResults(
-        retainedMessages,
-        retainedToolUseIds
-      )
+      // Find orphaned tool_results in retained messages. Strict-adjacent
+      // backends (Cloud Code Claude) require tool_result blocks to match the
+      // immediately preceding assistant message, not merely any assistant in
+      // the retained window.
+      const orphans =
+        mode === "strict-adjacent"
+          ? this.findStrictAdjacentOrphanedToolResults(
+              retainedMessages,
+              retainedToolUseIds
+            )
+          : this.findOrphanedToolResults(retainedMessages, retainedToolUseIds)
 
       if (orphans.length === 0) {
         // No orphans, we're done
@@ -324,6 +335,55 @@ export class ToolIntegrityService {
       this.logger.debug(
         `Found ${orphanedToolUses.length} tool_use(s) without result (may be pending)`
       )
+    }
+
+    return truncationIndex
+  }
+
+  /**
+   * Find the earliest truncation point that both preserves tool integrity and
+   * actually fits within the requested token budget.
+   *
+   * `findTruncationPointWithIntegrity()` may intentionally move the boundary
+   * earlier to keep a tool_use/tool_result pair intact, which can leave the
+   * retained suffix slightly over budget. This helper walks the boundary
+   * forward again, but only to other tool-safe cut points.
+   */
+  findBudgetSafeTruncationPointWithIntegrity(
+    messages: UnifiedMessage[],
+    targetTokens: number,
+    options?: {
+      mode?: EnforceToolProtocolOptions["mode"]
+    }
+  ): number {
+    if (messages.length === 0) return 0
+
+    const mode = options?.mode ?? "global"
+    let truncationIndex = this.findTruncationPointWithIntegrity(
+      messages,
+      targetTokens,
+      { mode }
+    )
+
+    while (truncationIndex < messages.length) {
+      const retainedMessages = messages.slice(truncationIndex)
+      if (this.tokenCounter.countMessages(retainedMessages) <= targetTokens) {
+        return truncationIndex
+      }
+
+      const nextIndex = this.findNextValidTruncationIndex(
+        messages,
+        truncationIndex + 1,
+        mode
+      )
+      if (nextIndex <= truncationIndex) {
+        break
+      }
+
+      this.logger.debug(
+        `Advancing truncation point from ${truncationIndex} to ${nextIndex} to satisfy token budget without breaking tool pairs`
+      )
+      truncationIndex = nextIndex
     }
 
     return truncationIndex
@@ -385,19 +445,98 @@ export class ToolIntegrityService {
   }
 
   /**
-   * Extract messages with tool integrity preserved
-   * This is a convenience method that combines findTruncationPointWithIntegrity
-   * with message slicing
+   * Extract messages with tool integrity preserved while staying within the
+   * requested token budget.
    */
   extractWithIntegrity(
     messages: UnifiedMessage[],
-    targetTokens: number
+    targetTokens: number,
+    options?: {
+      mode?: EnforceToolProtocolOptions["mode"]
+    }
   ): UnifiedMessage[] {
-    const truncationIndex = this.findTruncationPointWithIntegrity(
+    const truncationIndex = this.findBudgetSafeTruncationPointWithIntegrity(
       messages,
-      targetTokens
+      targetTokens,
+      options
     )
     return messages.slice(truncationIndex)
+  }
+
+  private retainedMessagesHaveValidToolResults(
+    messages: UnifiedMessage[],
+    mode: EnforceToolProtocolOptions["mode"]
+  ): boolean {
+    if (messages.length === 0) return true
+
+    const retainedToolUseIds = new Set<string>()
+    for (const message of messages) {
+      for (const id of this.extractToolUseIds(message)) {
+        retainedToolUseIds.add(id)
+      }
+    }
+
+    const orphans =
+      mode === "strict-adjacent"
+        ? this.findStrictAdjacentOrphanedToolResults(
+            messages,
+            retainedToolUseIds
+          )
+        : this.findOrphanedToolResults(messages, retainedToolUseIds)
+
+    return orphans.length === 0
+  }
+
+  private findNextValidTruncationIndex(
+    messages: UnifiedMessage[],
+    startIndex: number,
+    mode: EnforceToolProtocolOptions["mode"]
+  ): number {
+    const clampedStart = Math.max(0, Math.min(startIndex, messages.length))
+
+    for (
+      let candidate = clampedStart;
+      candidate <= messages.length;
+      candidate++
+    ) {
+      if (
+        this.retainedMessagesHaveValidToolResults(
+          messages.slice(candidate),
+          mode
+        )
+      ) {
+        return candidate
+      }
+    }
+
+    return messages.length
+  }
+
+  private findStrictAdjacentOrphanedToolResults(
+    messages: UnifiedMessage[],
+    availableToolUseIds: Set<string>
+  ): Array<{ tool_use_id: string; message_index: number }> {
+    const orphans: Array<{ tool_use_id: string; message_index: number }> = []
+
+    for (let i = 0; i < messages.length; i++) {
+      const message = messages[i]!
+      if (message.role !== "user") continue
+
+      const previous = i > 0 ? messages[i - 1] : undefined
+      const previousToolUseIds =
+        previous?.role === "assistant"
+          ? new Set(this.extractToolUseIds(previous))
+          : new Set<string>()
+
+      const toolResultIds = this.extractToolResultIds(message)
+      for (const id of toolResultIds) {
+        if (!availableToolUseIds.has(id) || !previousToolUseIds.has(id)) {
+          orphans.push({ tool_use_id: id, message_index: i })
+        }
+      }
+    }
+
+    return orphans
   }
 
   /**
@@ -423,7 +562,7 @@ export class ToolIntegrityService {
       }
     }
 
-    // Delegate all repair logic to the unified MessageIntegrityGuard
+    // Delegate all repair logic to the unified tool protocol integrity helper
     const guardResult = enforceToolProtocol(
       messages as Array<
         UnifiedMessage & { role: "user" | "assistant"; content: unknown }

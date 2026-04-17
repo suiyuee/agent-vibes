@@ -33,6 +33,7 @@ export interface ToolResultBlock {
   tool_use_id: string
   content: string | ContentBlock[]
   is_error?: boolean
+  structuredContent?: Record<string, unknown>
 }
 
 /**
@@ -53,6 +54,7 @@ export interface ImageBlock {
 export interface ThinkingBlock {
   type: "thinking"
   thinking: string
+  signature?: string
 }
 
 /**
@@ -77,6 +79,11 @@ export interface FunctionToolCall {
   }
 }
 
+export type LooseMessageContent =
+  | string
+  | ContentBlock[]
+  | Array<{ type: string; [key: string]: unknown }>
+
 /**
  * Unified message format
  * Supports both content-block and function-call style formats.
@@ -97,17 +104,6 @@ export interface UnifiedMessage {
 }
 
 /**
- * Truncation result with metadata
- */
-export interface TruncationResult {
-  messages: UnifiedMessage[]
-  was_truncated: boolean
-  original_token_count: number
-  truncated_token_count: number
-  summary_used: boolean
-}
-
-/**
  * Tool pair for integrity checking
  */
 export interface ToolPair {
@@ -117,31 +113,118 @@ export interface ToolPair {
   tool_name: string
 }
 
-/**
- * Configuration for truncation
- */
-export interface TruncationConfig {
-  max_context_tokens: number
-  summary_trigger_tokens: number
-  min_recent_messages: number
-  safety_margin_tokens: number
+export interface ContextUsageSnapshot {
+  inputTokens: number
+  cachedInputTokens: number
+  cacheCreationInputTokens: number
+  outputTokens: number
+  totalTokens: number
+  recordedAt: number
 }
 
-/**
- * Default truncation configuration
- * - max_context_tokens: 190K (leaving 10K safety margin for 200K Cloud Code limit)
- * - summary_trigger_tokens: 150K (trigger async summary generation)
- * - min_recent_messages: 5 (always keep at least 5 recent messages)
- * - safety_margin_tokens: 5K (reduced buffer for more context)
- *
- * Note: Increased limits to allow longer conversations and complete responses.
- * The previous 150K limit was too conservative and caused premature truncation.
- */
-export const DEFAULT_TRUNCATION_CONFIG: TruncationConfig = {
-  max_context_tokens: 190_000,
-  summary_trigger_tokens: 150_000,
-  min_recent_messages: 5,
-  safety_margin_tokens: 5_000,
+export interface ContextTranscriptRecord {
+  id: string
+  role: "user" | "assistant"
+  content: LooseMessageContent
+  createdAt: number
+}
+
+export interface ContextProjectionAttachment {
+  kind:
+    | "sub_agent"
+    | "read_paths"
+    | "file_states"
+    | "todos"
+    | "investigation_memory"
+  label: string
+  content: string
+  tokenCount: number
+}
+
+export interface ContextCompactionCommit {
+  id: string
+  strategy: "auto" | "manual" | "reactive"
+  createdAt: number
+  epoch?: number
+  parentCompactionId?: string
+  archivedThroughRecordId: string
+  projectionAnchorRecordId?: string
+  archivedMessageCount: number
+  sourceRecordCount?: number
+  attachmentFingerprint?: string
+  sourceTokenCount: number
+  summary: string
+  summaryTokenCount: number
+  projectedTokenCount: number
+}
+
+export interface ContextUsageLedgerState {
+  anchorRecordId?: string
+  lastUsage?: ContextUsageSnapshot
+  projectedTokenCount?: number
+  recordedCompactionId?: string
+  attachmentFingerprint?: string
+}
+
+export interface ContextCompactionBasis {
+  recordCount: number
+  attachmentFingerprint: string
+  appliedAt: number
+  compactionId: string
+  epoch: number
+}
+
+export interface ContextToolResultReplacementState {
+  seenToolUseIds: string[]
+  replacementByToolUseId: Record<string, string>
+}
+
+export interface ContextInvestigationMemoryEntry {
+  batchId: string
+  label: string
+  details: string
+  toolCallIds: string[]
+  toolCount: number
+  readOnly: boolean
+  createdAt: number
+}
+
+export interface InvestigationMemorySummaryLike {
+  label: string
+  details: string
+  toolCount?: number
+  readOnly?: boolean
+  createdAt?: number
+}
+
+export interface ContextConversationState {
+  records: ContextTranscriptRecord[]
+  compactionHistory: ContextCompactionCommit[]
+  activeCompactionId?: string
+  compactionEpoch?: number
+  lastAppliedCompaction?: ContextCompactionBasis
+  usageLedger: ContextUsageLedgerState
+  toolResultReplacementState?: ContextToolResultReplacementState
+  investigationMemory: ContextInvestigationMemoryEntry[]
+}
+
+export interface ProjectedContextMessage {
+  role: "user" | "assistant"
+  content: LooseMessageContent
+  source: "record" | "boundary" | "summary" | "attachment" | "snip"
+  recordId?: string
+  commitId?: string
+  attachmentKind?: ContextProjectionAttachment["kind"]
+  compactionEvent?: {
+    type: "boundary" | "summary"
+    commitId: string
+    epoch?: number
+    parentCompactionId?: string
+    archivedThroughRecordId?: string
+    summaryTokenCount?: number
+    sourceTokenCount?: number
+    projectedTokenCount?: number
+  }
 }
 
 /**
@@ -213,9 +296,7 @@ export function parseContent(content: unknown): ContentBlock[] | null {
  * Normalize message content to array format
  * Handles both string and array content
  */
-export function normalizeContent(
-  content: string | ContentBlock[]
-): ContentBlock[] {
+export function normalizeContent(content: LooseMessageContent): ContentBlock[] {
   if (typeof content === "string") {
     // Try to parse as JSON array first
     const parsed = parseContent(content)
@@ -225,13 +306,13 @@ export function normalizeContent(
     // Plain text string - wrap in TextBlock
     return [{ type: "text", text: content }]
   }
-  return content
+  return content as ContentBlock[]
 }
 
 /**
  * Extract text from content (string or array)
  */
-export function extractText(content: string | ContentBlock[]): string {
+export function extractText(content: LooseMessageContent): string {
   if (typeof content === "string") {
     // Try to parse as JSON array
     const parsed = parseContent(content)
@@ -244,7 +325,7 @@ export function extractText(content: string | ContentBlock[]): string {
     return content
   }
 
-  return content
+  return (content as ContentBlock[])
     .filter(isTextBlock)
     .map((b) => b.text)
     .join("")

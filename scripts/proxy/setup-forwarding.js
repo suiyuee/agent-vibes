@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 /**
- * Cursor API5 Agent → localhost:8000 forwarding (cross-platform)
+ * Cursor API5 Agent → localhost:2026 forwarding (cross-platform)
  *
  * How it works:
  *   1. /etc/hosts (or equivalent) resolves agent domains to 127.0.0.2
  *   2. A platform-specific local forwarding backend redirects
- *      127.0.0.2:443 → 127.0.0.1:8000
+ *      127.0.0.2:443 → 127.0.0.1:2026
  *
  * Backends:
  *   macOS  — lo0 alias + local TCP relay
@@ -17,16 +17,38 @@
  *   node setup-forwarding.js off      Disable forwarding (requires root/admin)
  *   node setup-forwarding.js status   Show status
  *   node setup-forwarding.js hosts    Print /etc/hosts entries
+ *
+ * Options:
+ *   --port=XXXX   Bridge port to forward to (default: 2026)
+ *   --json        Print structured JSON for `status`
  */
 
-const { execSync } = require("child_process")
+const { execSync, spawnSync } = require("child_process")
 const fs = require("fs")
 const os = require("os")
 const platform = require("../lib/platform")
 
+const CLI_ARGS = process.argv.slice(2)
+const SUBCOMMANDS = new Set([
+  "on",
+  "enable",
+  "off",
+  "disable",
+  "status",
+  "hosts",
+])
 const LOOPBACK_IP = "127.0.0.2"
 const FROM_PORT = 443
-const TO_PORT = 8000
+const subCmd = CLI_ARGS.find((arg) => SUBCOMMANDS.has(arg)) || "status"
+const OUTPUT_JSON = CLI_ARGS.includes("--json")
+// Accept --port=XXXX from CLI; fall back to 2026
+const TO_PORT = (() => {
+  for (const arg of CLI_ARGS) {
+    const match = /^--port=(\d+)$/.exec(arg)
+    if (match) return parseInt(match[1])
+  }
+  return 2026
+})()
 
 // Cursor agent domains to redirect
 const HOST_DOMAINS = [
@@ -73,6 +95,18 @@ function run(cmd, ignoreError = false) {
 
 function shellEscape(value) {
   return "'" + String(value).replace(/'/g, "'\\''") + "'"
+}
+
+function readHostsContent() {
+  try {
+    return fs.readFileSync(getHostsPath(), "utf-8")
+  } catch {
+    return ""
+  }
+}
+
+function hasHostEntries() {
+  return readHostsContent().includes(HOSTS_BEGIN)
 }
 
 function parseMacProxyConfig() {
@@ -531,7 +565,9 @@ function pfEnable() {
   const startTime = Date.now()
   while (Date.now() - startTime < 1000) {
     if (getRelayPid()) break
-    require("child_process").execSync("sleep 0.1")
+    spawnSync(process.execPath, ["-e", "setTimeout(()=>{},100)"], {
+      stdio: "ignore",
+    })
   }
 
   if (getRelayPid()) {
@@ -955,12 +991,111 @@ function linuxBypassStatus() {
   }
 }
 
+function getPlatformStatusPayload() {
+  const backend = platform.forwardingBackend()
+  const payload = {
+    ok: false,
+    platform: platform.PLATFORM,
+    backend,
+    backendStatusLabel: "",
+    port: TO_PORT,
+    loopbackIp: LOOPBACK_IP,
+    listenPort: FROM_PORT,
+    checks: {
+      hosts: hasHostEntries(),
+      loopbackAlias: null,
+      backendConfigured: false,
+      proxyBypass: null,
+      localProxyReachable: false,
+      endToEndReachable: false,
+    },
+  }
+
+  if (backend === "pf") {
+    const lo0Info = run("ifconfig lo0", true)
+    const relayPid = getRelayPid()
+    const bypass = parseMacProxyConfig()
+    const missingBypass = bypass?.enabled
+      ? PROXY_BYPASS_ENTRIES.filter(
+          (entry) => !bypass.exceptions.includes(entry)
+        )
+      : []
+
+    payload.backendStatusLabel = "TCP relay process"
+    payload.checks.loopbackAlias = lo0Info.includes(LOOPBACK_IP)
+    payload.checks.backendConfigured = Boolean(relayPid)
+    payload.checks.proxyBypass = bypass?.enabled
+      ? missingBypass.length === 0
+      : null
+    payload.relayPid = relayPid
+    payload.ok =
+      payload.checks.hosts &&
+      payload.checks.loopbackAlias &&
+      payload.checks.backendConfigured
+    return payload
+  }
+
+  if (backend === "iptables") {
+    const addrInfo = run("ip addr show lo", true)
+    const natRules = run("iptables -t nat -L OUTPUT -n 2>/dev/null", true)
+    const bypassList = linuxGetBypassList()
+    const proxyMode = linuxHasGsettings()
+      ? linuxRunGsettings("get org.gnome.system.proxy mode", true)
+      : ""
+    const bypassActive = linuxHasGsettings() && proxyMode === "'manual'"
+    const missingBypass = bypassActive
+      ? PROXY_BYPASS_ENTRIES.filter(
+          (entry) => !(bypassList || []).includes(entry)
+        )
+      : []
+
+    payload.backendStatusLabel = "iptables NAT rule"
+    payload.checks.loopbackAlias = addrInfo.includes(`${LOOPBACK_IP}/`)
+    payload.checks.backendConfigured = natRules.includes(LOOPBACK_IP)
+    payload.checks.proxyBypass = bypassActive
+      ? missingBypass.length === 0
+      : null
+    payload.ok =
+      payload.checks.hosts &&
+      payload.checks.loopbackAlias &&
+      payload.checks.backendConfigured
+    return payload
+  }
+
+  const proxyRules = run("netsh interface portproxy show v4tov4", true)
+  const bypassList = winGetBypassList()
+  const proxyEnabled = run(
+    `reg query "${WIN_REG_KEY}" /v ProxyEnable`,
+    true
+  ).includes("0x1")
+  const missingBypass = proxyEnabled
+    ? PROXY_BYPASS_ENTRIES.filter((entry) => !bypassList.includes(entry))
+    : []
+
+  payload.backendStatusLabel = "Port proxy rule"
+  payload.checks.backendConfigured = proxyRules.includes(LOOPBACK_IP)
+  payload.checks.proxyBypass = proxyEnabled ? missingBypass.length === 0 : null
+  payload.ok = payload.checks.hosts && payload.checks.backendConfigured
+  return payload
+}
+
+async function getStatusPayload() {
+  const payload = getPlatformStatusPayload()
+  payload.checks.localProxyReachable = await h2HealthCheck("localhost", TO_PORT)
+  payload.checks.endToEndReachable = await h2HealthCheck(LOOPBACK_IP, FROM_PORT)
+  return payload
+}
+
+async function printStatusJson() {
+  const payload = await getStatusPayload()
+  console.log(JSON.stringify(payload, null, 2))
+}
+
 // ---------------------------------------------------------------------------
 // Router — dispatch to the correct backend
 // ---------------------------------------------------------------------------
 
 const backend = platform.forwardingBackend()
-const subCmd = process.argv[2] || "status"
 
 switch (subCmd) {
   case "on":
@@ -986,6 +1121,24 @@ switch (subCmd) {
     break
 
   case "status":
+    if (OUTPUT_JSON) {
+      printStatusJson().catch((error) => {
+        console.error(
+          JSON.stringify(
+            {
+              ok: false,
+              error: error instanceof Error ? error.message : String(error),
+              platform: platform.PLATFORM,
+              backend,
+            },
+            null,
+            2
+          )
+        )
+        process.exit(1)
+      })
+      break
+    }
     if (backend === "pf") pfStatus()
     else if (backend === "iptables") iptablesStatus()
     else if (backend === "netsh") netshStatus()

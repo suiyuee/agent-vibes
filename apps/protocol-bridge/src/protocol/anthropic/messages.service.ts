@@ -1,8 +1,16 @@
 import { Injectable, Logger, OnModuleInit } from "@nestjs/common"
-import { ConversationTruncatorService, UnifiedMessage } from "../../context"
-import { TokenizerService } from "../../context/tokenizer.service"
-import { CodexService } from "../../llm/codex/codex.service"
-import { ClaudeApiService } from "../../llm/claude-api/claude-api.service"
+import {
+  type ContextAttachmentSnapshot,
+  ContextManagerService,
+  TokenCounterService,
+  UnifiedMessage,
+} from "../../context"
+import { CodexService } from "../../llm/openai/codex.service"
+import type { CodexForwardHeaders } from "../../llm/openai/codex-header-utils"
+import {
+  AnthropicApiService,
+  DEFAULT_CLAUDE_API_CONTEXT_LIMIT_TOKENS,
+} from "../../llm/anthropic/anthropic-api.service"
 import { GoogleModelCacheService } from "../../llm/google/google-model-cache.service"
 import { GoogleService } from "../../llm/google/google.service"
 import {
@@ -10,15 +18,17 @@ import {
   getCodexPublicModelIds,
   getPublicModelMetadata,
   resolveCloudCodeModel,
-} from "../../llm/model-registry"
+} from "../../llm/shared/model-registry"
 import {
   ModelRouteResult,
   ModelRouterService,
-} from "../../llm/model-router.service"
-import { OpenaiCompatService } from "../../llm/openai-compat/openai-compat.service"
+} from "../../llm/shared/model-router.service"
+import { OpenaiCompatService } from "../../llm/openai/openai-compat.service"
+import { BackendApiError } from "../../llm/shared/backend-errors"
 import type { AnthropicResponse } from "../../shared/anthropic"
 import { CountTokensDto } from "./dto/count-tokens.dto"
 import { CreateMessageDto } from "./dto/create-message.dto"
+import { TokenizerService } from "./tokenizer.service"
 
 /**
  * MessagesService - Routes requests to Google or Codex backend.
@@ -26,16 +36,35 @@ import { CreateMessageDto } from "./dto/create-message.dto"
 @Injectable()
 export class MessagesService implements OnModuleInit {
   private readonly logger = new Logger(MessagesService.name)
+  private readonly DEFAULT_HISTORY_MAX_TOKENS = 166_000
+  private readonly CLOUD_CODE_CONTEXT_LIMIT_TOKENS = 200_000
+  private readonly CLOUD_CODE_EXTRA_OVERHEAD_TOKENS = 1_536
+  private readonly GENERIC_EXTRA_OVERHEAD_TOKENS = 768
+  private readonly GOOGLE_CONTEXT_TAGS = [
+    "user_information",
+    "mcp_servers",
+    "artifacts",
+    "user_rules",
+    "workflows",
+    "ADDITIONAL_METADATA",
+    "EPHEMERAL_MESSAGE",
+  ] as const
+  private readonly EMPTY_ATTACHMENT_SNAPSHOT: ContextAttachmentSnapshot = {
+    readPaths: [],
+    fileStates: [],
+    todos: [],
+  }
 
   constructor(
     private readonly googleService: GoogleService,
     private readonly googleModelCache: GoogleModelCacheService,
     private readonly modelRouter: ModelRouterService,
     private readonly tokenizer: TokenizerService,
-    private readonly truncator: ConversationTruncatorService,
+    private readonly tokenCounter: TokenCounterService,
+    private readonly contextManager: ContextManagerService,
     private readonly codexService: CodexService,
     private readonly openaiCompatService: OpenaiCompatService,
-    private readonly claudeApiService: ClaudeApiService
+    private readonly anthropicApiService: AnthropicApiService
   ) {}
 
   private isGptBackendAvailable(): boolean {
@@ -60,14 +89,16 @@ export class MessagesService implements OnModuleInit {
       () => this.googleService.checkAvailability(),
       () => this.codexService.checkAvailability(),
       () => this.openaiCompatService.checkAvailability(),
-      () => this.claudeApiService.checkAvailability()
+      () => this.anthropicApiService.checkAvailability()
     )
     this.modelRouter.setGptAvailabilityProviders({
       codex: () => this.codexService.isAvailable(),
       openaiCompat: () => this.openaiCompatService.isAvailable(),
+      codexSupportsModel: (model) => this.codexService.supportsModel(model),
+      openaiCompatSupportsModel: () => this.openaiCompatService.isAvailable(),
     })
     this.modelRouter.setClaudeAvailabilityProvider((model) =>
-      this.claudeApiService.supportsModel(model)
+      this.anthropicApiService.supportsModel(model)
     )
     this.logger.log("Backend availability tests completed")
   }
@@ -89,6 +120,60 @@ export class MessagesService implements OnModuleInit {
         .join("\n")
     }
     return ""
+  }
+
+  private extractGoogleContextBlocks(systemText: string): string[] {
+    const tagAlternation = this.GOOGLE_CONTEXT_TAGS.join("|")
+    const blockPattern = new RegExp(
+      `<(?:${tagAlternation})>[\\s\\S]*?<\\/(?:${tagAlternation})>`,
+      "g"
+    )
+    const matches = Array.from(systemText.matchAll(blockPattern))
+
+    if (matches.length > 0) {
+      const blocks: string[] = []
+      let cursor = 0
+
+      for (const match of matches) {
+        const block = match[0]?.trim()
+        const index = match.index ?? cursor
+        const prefix = systemText.slice(cursor, index).trim()
+
+        if (prefix) {
+          blocks.push(prefix)
+        }
+        if (block) {
+          blocks.push(block)
+        }
+
+        cursor = index + (match[0]?.length || 0)
+      }
+
+      const suffix = systemText.slice(cursor).trim()
+      if (suffix) {
+        blocks.push(suffix)
+      }
+
+      return this.dedupePreserveOrder(blocks)
+    }
+
+    const trimmed = systemText.trim()
+    if (!trimmed) return []
+    return [`<user_rules>\n${trimmed}\n</user_rules>`]
+  }
+
+  private dedupePreserveOrder(values: string[]): string[] {
+    const seen = new Set<string>()
+    const result: string[] = []
+
+    for (const value of values) {
+      const normalized = value.trim()
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      result.push(normalized)
+    }
+
+    return result
   }
 
   /**
@@ -121,46 +206,12 @@ export class MessagesService implements OnModuleInit {
 
     if (!systemText) return dto
 
-    // If system prompt contains Claude Code identity, extract the user rules portion
-    // Claude Code format: identity section + user rules + tool descriptions + ...
-    // We only need to preserve user-defined content (rules, project settings)
-    const contextMessages: Array<{ role: string; content: string }> = []
-
-    if (
-      systemText.includes("You are Claude Code") ||
-      systemText.includes("You are Claude")
-    ) {
-      // Claude Code system prompt - extract user rules sections
-      // Look for common markers that indicate user-defined content
-      const userRulesMarkers = [
-        /# User's Custom Instructions[\s\S]*?(?=\n#|$)/,
-        /# CLAUDE\.md[\s\S]*?(?=\n#|$)/,
-        /## User Rules[\s\S]*?(?=\n##|$)/,
-        /<user_rules>[\s\S]*?<\/user_rules>/,
-      ]
-
-      const extractedRules: string[] = []
-      for (const marker of userRulesMarkers) {
-        const match = systemText.match(marker)
-        if (match) {
-          extractedRules.push(match[0])
-        }
-      }
-
-      if (extractedRules.length > 0) {
-        contextMessages.push({
-          role: "user",
-          content:
-            "<user_rules>\n" + extractedRules.join("\n\n") + "\n</user_rules>",
-        })
-      }
-    } else {
-      // Non-Claude-Code system prompt — preserve entire content as user context
-      contextMessages.push({
+    const contextMessages = this.extractGoogleContextBlocks(systemText).map(
+      (content) => ({
         role: "user",
-        content: "<user_rules>\n" + systemText + "\n</user_rules>",
+        content,
       })
-    }
+    )
 
     if (contextMessages.length === 0) return dto
 
@@ -171,42 +222,137 @@ export class MessagesService implements OnModuleInit {
     return {
       ...dto,
       messages: [...(contextMessages as typeof dto.messages), ...dto.messages],
+      _protectedContextMessageCount: contextMessages.length,
+      system: undefined,
     }
   }
 
-  /**
-   * Apply context truncation to messages if needed
-   * Returns a new DTO with truncated messages
-   */
-  private applyTruncation(dto: CreateMessageDto): CreateMessageDto {
-    // Calculate system prompt tokens
-    const systemPromptTokens = dto.system
-      ? this.truncator.countTokens([
-          { role: "user", content: dto.system } as UnifiedMessage,
-        ])
-      : 0
+  private isGoogleBackend(route: ModelRouteResult): boolean {
+    return route.backend === "google" || route.backend === "google-claude"
+  }
 
-    // Apply truncation
-    const truncationResult = this.truncator.truncateInMemory(
+  private normalizePositiveInteger(value: unknown): number | undefined {
+    if (typeof value !== "number") return undefined
+    if (!Number.isFinite(value) || value <= 0) return undefined
+    return Math.floor(value)
+  }
+
+  private countSystemPromptTokens(dto: CreateMessageDto): number {
+    if (!dto.system) return 0
+
+    return this.tokenCounter.countMessages([
+      { role: "user", content: dto.system } as UnifiedMessage,
+    ])
+  }
+
+  private getBackendContextLimit(route: ModelRouteResult): number | undefined {
+    if (this.isGoogleBackend(route)) {
+      return this.CLOUD_CODE_CONTEXT_LIMIT_TOKENS
+    }
+    if (route.backend === "claude-api") {
+      return (
+        this.anthropicApiService.getConfiguredMaxContextTokens(route.model) ??
+        DEFAULT_CLAUDE_API_CONTEXT_LIMIT_TOKENS
+      )
+    }
+    if (route.backend === "openai-compat") {
+      return this.openaiCompatService.getConfiguredMaxContextTokens(route.model)
+    }
+    return undefined
+  }
+
+  private resolveContextBudget(
+    dto: CreateMessageDto,
+    route: ModelRouteResult
+  ): {
+    maxTokens: number
+    systemPromptTokens: number
+  } {
+    let maxTokens =
+      this.normalizePositiveInteger(dto._contextTokenBudget) ||
+      this.DEFAULT_HISTORY_MAX_TOKENS
+    const backendLimit = this.getBackendContextLimit(route)
+    if (backendLimit && maxTokens > backendLimit) {
+      this.logger.warn(
+        `Request context budget ${maxTokens} exceeds backend cap ${backendLimit}, clamping`
+      )
+      maxTokens = backendLimit
+    }
+
+    const systemPromptTokens =
+      this.countSystemPromptTokens(dto) +
+      this.tokenCounter.countJsonValue(dto.tools) +
+      (this.isGoogleBackend(route)
+        ? this.googleService.getSystemPromptTokenEstimate() +
+          this.CLOUD_CODE_EXTRA_OVERHEAD_TOKENS
+        : this.GENERIC_EXTRA_OVERHEAD_TOKENS)
+
+    return {
+      maxTokens,
+      systemPromptTokens,
+    }
+  }
+
+  private applyContextCompaction(
+    dto: CreateMessageDto,
+    route: ModelRouteResult
+  ): CreateMessageDto {
+    const originalTokens = this.contextManager.countMessages(
+      dto.messages as UnifiedMessage[]
+    )
+    const budget = this.resolveContextBudget(dto, route)
+    const result = this.contextManager.buildBackendMessagesFromMessages(
       dto.messages as UnifiedMessage[],
+      this.EMPTY_ATTACHMENT_SNAPSHOT,
       {
-        systemPromptTokens,
+        maxTokens: budget.maxTokens,
+        systemPromptTokens: budget.systemPromptTokens,
         pendingToolUseIds: dto._pendingToolUseIds,
+        strategy: "auto",
       }
     )
 
-    if (truncationResult.was_truncated) {
+    if (result.wasCompacted) {
       this.logger.log(
-        `Applied context truncation: ${truncationResult.original_token_count} -> ` +
-          `${truncationResult.truncated_token_count} tokens ` +
-          `(${dto.messages.length} -> ${truncationResult.messages.length} messages)`
+        `Applied context compaction for ${route.backend}: ${originalTokens} -> ` +
+          `${result.estimatedTokens} tokens (${dto.messages.length} -> ${result.messages.length} messages)`
+      )
+    }
+    if (result.snipCompaction?.changed) {
+      this.logger.log(
+        `Applied snip compaction for ${route.backend}: ` +
+          `${result.snipCompaction.removedRecords} live records summarized, ` +
+          `${result.snipCompaction.retainedRecords} retained`
+      )
+    }
+    if (result.microcompactCompaction?.changed) {
+      this.logger.log(
+        `Applied ${result.microcompactCompaction.trigger} microcompact for ${route.backend}: ` +
+          `${result.microcompactCompaction.clearedToolResults} results across ` +
+          `${result.microcompactCompaction.compactedRounds} API rounds`
       )
     }
 
     return {
       ...dto,
-      messages: truncationResult.messages as typeof dto.messages,
+      messages: result.messages as typeof dto.messages,
     }
+  }
+
+  private prepareDtoForRoute(
+    dto: CreateMessageDto,
+    route: ModelRouteResult
+  ): CreateMessageDto {
+    const routedDto = {
+      ...dto,
+      model: route.model,
+      _requestedModel: dto._requestedModel || dto.model,
+    }
+    const compactedDto = this.applyContextCompaction(routedDto, route)
+
+    return this.isGoogleBackend(route)
+      ? this.prepareForGoogle(compactedDto)
+      : compactedDto
   }
 
   /**
@@ -261,15 +407,31 @@ export class MessagesService implements OnModuleInit {
     dto: CreateMessageDto,
     route: ModelRouteResult,
     forwardHeaders?: Record<string, string>,
+    codexForwardHeaders?: CodexForwardHeaders,
     attemptedBackends: Set<string> = new Set()
   ): Promise<AnthropicResponse> {
     attemptedBackends.add(route.backend)
-    const routedDto = { ...dto, model: route.model }
 
     try {
+      if (
+        route.backend === "codex" &&
+        !this.codexService.supportsModel(route.model)
+      ) {
+        throw new BackendApiError(
+          `Model ${route.model} is not supported by the configured Codex account(s).`,
+          {
+            backend: "codex",
+            statusCode: 400,
+            permanent: true,
+          }
+        )
+      }
+
+      const routedDto = this.prepareDtoForRoute(dto, route)
+
       if (route.backend === "claude-api") {
         this.logger.log(`[ROUTE] Claude API backend | model: ${route.model}`)
-        return await this.claudeApiService.sendClaudeMessage(
+        return await this.anthropicApiService.sendClaudeMessage(
           routedDto,
           forwardHeaders
         )
@@ -282,13 +444,14 @@ export class MessagesService implements OnModuleInit {
 
       if (route.backend === "codex") {
         this.logger.log(`[ROUTE] Codex backend | model: ${route.model}`)
-        return await this.codexService.sendClaudeMessage(routedDto)
+        return await this.codexService.sendClaudeMessage(
+          routedDto,
+          codexForwardHeaders
+        )
       }
 
       this.logger.log(`[ROUTE] Google backend | model: ${route.model}`)
-      return await this.googleService.sendClaudeMessage(
-        this.prepareForGoogle(routedDto)
-      )
+      return await this.googleService.sendClaudeMessage(routedDto)
     } catch (error) {
       const fallback = this.modelRouter.getFallbackRoute(
         dto.model,
@@ -313,6 +476,7 @@ export class MessagesService implements OnModuleInit {
           dto,
           fallback,
           forwardHeaders,
+          codexForwardHeaders,
           attemptedBackends
         )
       }
@@ -325,10 +489,10 @@ export class MessagesService implements OnModuleInit {
     dto: CreateMessageDto,
     route: ModelRouteResult,
     forwardHeaders?: Record<string, string>,
+    codexForwardHeaders?: CodexForwardHeaders,
     attemptedBackends: Set<string> = new Set()
   ): AsyncGenerator<string, void, unknown> {
     attemptedBackends.add(route.backend)
-    const routedDto = { ...dto, model: route.model }
     let emittedAny = false
     let buffer: string[] = []
 
@@ -353,11 +517,27 @@ export class MessagesService implements OnModuleInit {
     }
 
     try {
+      if (
+        route.backend === "codex" &&
+        !this.codexService.supportsModel(route.model)
+      ) {
+        throw new BackendApiError(
+          `Model ${route.model} is not supported by the configured Codex account(s).`,
+          {
+            backend: "codex",
+            statusCode: 400,
+            permanent: true,
+          }
+        )
+      }
+
+      const routedDto = this.prepareDtoForRoute(dto, route)
+
       if (route.backend === "claude-api") {
         this.logger.log(
           `[ROUTE] Claude API backend | model: ${route.model} | stream: true`
         )
-        for await (const event of this.claudeApiService.sendClaudeMessageStream(
+        for await (const event of this.anthropicApiService.sendClaudeMessageStream(
           routedDto,
           forwardHeaders
         )) {
@@ -389,7 +569,8 @@ export class MessagesService implements OnModuleInit {
           `[ROUTE] Codex backend | model: ${route.model} | stream: true`
         )
         for await (const event of this.codexService.sendClaudeMessageStream(
-          routedDto
+          routedDto,
+          codexForwardHeaders
         )) {
           yield* handleEvent(event)
         }
@@ -403,7 +584,7 @@ export class MessagesService implements OnModuleInit {
         `[ROUTE] Google backend | model: ${route.model} | stream: true`
       )
       for await (const event of this.googleService.sendClaudeMessageStream(
-        this.prepareForGoogle(routedDto)
+        routedDto
       )) {
         yield* handleEvent(event)
       }
@@ -435,6 +616,7 @@ export class MessagesService implements OnModuleInit {
           dto,
           fallback,
           forwardHeaders,
+          codexForwardHeaders,
           attemptedBackends
         )
         return
@@ -446,7 +628,8 @@ export class MessagesService implements OnModuleInit {
 
   async createMessage(
     dto: CreateMessageDto,
-    forwardHeaders?: Record<string, string>
+    forwardHeaders?: Record<string, string>,
+    codexForwardHeaders?: CodexForwardHeaders
   ): Promise<AnthropicResponse> {
     this.logger.log(
       `Request for model: ${dto.model}, stream: ${dto.stream || false}`
@@ -456,12 +639,14 @@ export class MessagesService implements OnModuleInit {
       dto = this.injectDocProhibition(dto)
     }
 
-    // Apply context truncation before routing
-    dto = this.applyTruncation(dto)
-
     // Use ModelRouterService for model-based routing
     const route = this.modelRouter.resolveModel(dto.model)
-    return this.executeRoutedMessage(dto, route, forwardHeaders)
+    return this.executeRoutedMessage(
+      dto,
+      route,
+      forwardHeaders,
+      codexForwardHeaders
+    )
   }
 
   /**
@@ -469,7 +654,8 @@ export class MessagesService implements OnModuleInit {
    */
   async *createMessageStream(
     dto: CreateMessageDto,
-    forwardHeaders?: Record<string, string>
+    forwardHeaders?: Record<string, string>,
+    codexForwardHeaders?: CodexForwardHeaders
   ): AsyncGenerator<string, void, unknown> {
     this.logger.log(`Streaming request for model: ${dto.model}`)
 
@@ -477,12 +663,14 @@ export class MessagesService implements OnModuleInit {
       dto = this.injectDocProhibition(dto)
     }
 
-    // Apply context truncation before routing
-    dto = this.applyTruncation(dto)
-
     // Use ModelRouterService for model-based routing
     const route = this.modelRouter.resolveModel(dto.model)
-    yield* this.executeRoutedMessageStream(dto, route, forwardHeaders)
+    yield* this.executeRoutedMessageStream(
+      dto,
+      route,
+      forwardHeaders,
+      codexForwardHeaders
+    )
   }
 
   /**
@@ -499,7 +687,7 @@ export class MessagesService implements OnModuleInit {
 
     // ── Upstream first ──
     try {
-      const upstreamResult = await this.claudeApiService.countTokensUpstream(
+      const upstreamResult = await this.anthropicApiService.countTokensUpstream(
         dto as unknown as Record<string, unknown>
       )
       if (upstreamResult) {
@@ -627,7 +815,11 @@ export class MessagesService implements OnModuleInit {
       }
 
       if (resolved.family === "gpt") {
-        return this.isGptBackendAvailable()
+        if (this.openaiCompatService.isAvailable()) {
+          return true
+        }
+
+        return this.codexService.supportsModel(modelId)
       }
 
       if (resolved.family === "gemini") {
@@ -635,7 +827,7 @@ export class MessagesService implements OnModuleInit {
       }
 
       return (
-        this.claudeApiService.supportsModel(modelId) ||
+        this.anthropicApiService.supportsModel(modelId) ||
         canRouteViaGoogle(modelId)
       )
     }
@@ -679,7 +871,7 @@ export class MessagesService implements OnModuleInit {
     }
 
     // 2) Compatibility aliases we intentionally keep for existing clients
-    for (const model of this.claudeApiService.getPublicModels()) {
+    for (const model of this.anthropicApiService.getPublicModels()) {
       if (modelMap.has(model.id)) {
         continue
       }
@@ -724,7 +916,9 @@ export class MessagesService implements OnModuleInit {
         codexModelTier: this.getAdvertisedGptModelTier(),
       })
       for (const modelId of codexModels) {
-        addModel(modelId, "openai")
+        if (isModelAdvertisable(modelId)) {
+          addModel(modelId, "openai")
+        }
       }
     }
 

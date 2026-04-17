@@ -13,9 +13,10 @@ import {
 import { DocumentBuilder, SwaggerModule } from "@nestjs/swagger"
 import { execSync } from "child_process"
 import * as fs from "fs"
+import * as os from "os"
 import * as path from "path"
 import { AppModule } from "./app.module"
-import { ModelRouterService } from "./llm/model-router.service"
+import { ModelRouterService } from "./llm/shared/model-router.service"
 import { registerContentTypeParsers } from "./shared/content-type-parsers"
 import { registerRequestHooks } from "./shared/request-hooks"
 
@@ -47,7 +48,7 @@ async function bootstrap() {
     : ["warn", "error"]
 
   // ── File Logging (debug mode only) ─────────────────────────────────
-  const logDir = path.join(__dirname, "..", "..", "..", ".log")
+  const logDir = path.join(os.tmpdir(), "agent-vibes-logs")
   fs.mkdirSync(logDir, { recursive: true })
 
   const timestampForFilename = () =>
@@ -119,12 +120,28 @@ async function bootstrap() {
   const logger = new Logger("Bootstrap")
 
   // Check if SSL certificates exist for HTTP/2
-  const certPath = path.join(__dirname, "..", "certs", "localhost.crt")
-  const keyPath = path.join(__dirname, "..", "certs", "localhost.key")
+  // Priority: ~/.agent-vibes/certs/ (extension-generated) > apps/protocol-bridge/certs/ (mkcert)
+  const agentVibesCertsDir = path.join(
+    process.env.AGENT_VIBES_DATA_DIR || path.join(os.homedir(), ".agent-vibes"),
+    "certs"
+  )
+  const certCandidates = [
+    {
+      cert: path.join(agentVibesCertsDir, "server.pem"),
+      key: path.join(agentVibesCertsDir, "server-key.pem"),
+    },
+    {
+      cert: path.join(__dirname, "..", "certs", "localhost.crt"),
+      key: path.join(__dirname, "..", "certs", "localhost.key"),
+    },
+  ]
+  const foundCerts = certCandidates.find(
+    (c) => fs.existsSync(c.cert) && fs.existsSync(c.key)
+  )
+  const certPath = foundCerts?.cert
+  const keyPath = foundCerts?.key
   const useHttp2 =
-    fs.existsSync(certPath) &&
-    fs.existsSync(keyPath) &&
-    process.env.USE_HTTP2 !== "false"
+    certPath != null && keyPath != null && process.env.USE_HTTP2 !== "false"
 
   // Create Fastify adapter with HTTP/2 support
   const fastifyAdapter = new FastifyAdapter(
@@ -199,20 +216,29 @@ async function bootstrap() {
     })
   )
 
-  // Swagger documentation
-  const config = new DocumentBuilder()
-    .setTitle("Agent Vibes Proxy")
-    .setDescription(
-      "Unified Claude Code API Proxy with Antigravity and Gemini WebSearch"
-    )
-    .setVersion("1.0")
-    .addApiKey({ type: "apiKey", name: "x-api-key", in: "header" }, "api-key")
-    .build()
+  // Swagger documentation (skip in SEA mode to avoid circular dep in bundled code)
+  const isSea = (() => {
+    try {
+      return require("node:sea").isSea()
+    } catch {
+      return false
+    }
+  })()
+  if (!isSea) {
+    const config = new DocumentBuilder()
+      .setTitle("Agent Vibes Proxy")
+      .setDescription(
+        "Unified Claude Code API Proxy with Antigravity and Gemini WebSearch"
+      )
+      .setVersion("1.0")
+      .addApiKey({ type: "apiKey", name: "x-api-key", in: "header" }, "api-key")
+      .build()
 
-  const document = SwaggerModule.createDocument(app, config)
-  SwaggerModule.setup("docs", app, document)
+    const document = SwaggerModule.createDocument(app, config)
+    SwaggerModule.setup("docs", app, document)
+  }
 
-  const port = process.env.PORT || 8000
+  const port = process.env.PORT || 2026
   await app.listen(port, "0.0.0.0")
 
   const protocol = useHttp2 ? "https" : "http"

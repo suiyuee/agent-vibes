@@ -35,6 +35,13 @@ import {
   AwaitTaskCompleteSchema,
   AwaitToolCallSchema,
   BackgroundShellSpawnArgsSchema,
+  BlameByFilePathArgsSchema,
+  BlameByFilePathErrorSchema,
+  BlameByFilePathResultSchema,
+  BlameByFilePathSuccessSchema,
+  BlameByFilePathToolCallSchema,
+  type CommandClassifierResult,
+  CommandClassifierResultSchema,
   ComputerUseArgsSchema,
   ComputerUseErrorSchema,
   ComputerUseResultSchema,
@@ -50,6 +57,7 @@ import {
   CreatePlanToolCallSchema,
   // PR Management
   CreatePrActionSchema,
+  CursorRuleSchema,
   DeleteArgsSchema,
   DeleteErrorSchema,
   DeleteFileBusySchema,
@@ -80,7 +88,6 @@ import {
   ExecuteHookArgsSchema,
   FetchArgsSchema,
   FetchErrorSchema,
-  type FetchResult,
   FetchResultSchema,
   FetchSuccessSchema,
   FetchToolCallSchema,
@@ -92,6 +99,11 @@ import {
   GenerateImageSuccessSchema,
   GenerateImageToolCallSchema,
   GetBlobArgsSchema,
+  GetMcpToolsAgentResultSchema,
+  GetMcpToolsArgsSchema,
+  GetMcpToolsErrorSchema,
+  GetMcpToolsSuccessSchema,
+  GetMcpToolsToolCallSchema,
   GlobToolArgsSchema,
   GlobToolCallSchema,
   GlobToolErrorSchema,
@@ -143,6 +155,7 @@ import {
   type McpToolResult,
   McpToolResultContentItemSchema,
   McpToolResultSchema,
+  OutputLocationSchema,
   PartialToolCallUpdateSchema,
   PhaseSchema,
   PositionSchema,
@@ -168,6 +181,7 @@ import {
   ReadMcpResourceRejectedSchema,
   ReadMcpResourceSuccessSchema,
   ReadMcpResourceToolCallSchema,
+  ReadRangeSchema,
   ReadTodosArgsSchema,
   ReadTodosErrorSchema,
   ReadTodosResultSchema,
@@ -191,11 +205,16 @@ import {
   ReflectResultSchema,
   ReflectSuccessSchema,
   ReflectToolCallSchema,
+  ReportBugArgsSchema,
+  ReportBugErrorSchema,
   ReportBugfixResultsArgsSchema,
   ReportBugfixResultsErrorSchema,
   ReportBugfixResultsResultSchema,
   ReportBugfixResultsSuccessSchema,
   ReportBugfixResultsToolCallSchema,
+  ReportBugResultSchema,
+  ReportBugSuccessSchema,
+  ReportBugToolCallSchema,
   SandboxPolicy_Type,
   SandboxPolicySchema,
   SemSearchToolArgsSchema,
@@ -203,13 +222,20 @@ import {
   SemSearchToolErrorSchema,
   SemSearchToolResultSchema,
   SemSearchToolSuccessSchema,
+  SetActiveBranchArgsSchema,
+  SetActiveBranchErrorSchema,
+  SetActiveBranchResultSchema,
+  SetActiveBranchSuccessSchema,
+  SetActiveBranchToolCallSchema,
   SetBlobArgsSchema,
   SetupVmEnvironmentArgsSchema,
   SetupVmEnvironmentResultSchema,
   SetupVmEnvironmentSuccessSchema,
   SetupVmEnvironmentToolCallSchema,
+  ShellAbortReason,
   // Shell
   ShellArgsSchema,
+  ShellBackgroundReason,
   ShellCommandParsingResult_ExecutableCommandArgSchema,
   ShellCommandParsingResult_ExecutableCommandSchema,
   ShellCommandParsingResultSchema,
@@ -266,6 +292,7 @@ import {
   TextDeltaUpdateSchema,
   ThinkingCompletedUpdateSchema,
   ThinkingDeltaUpdateSchema,
+  TimeoutBehavior,
   // Todo & Phase
   TodoItemSchema,
   TokenDeltaUpdateSchema,
@@ -319,9 +346,9 @@ import {
   type Value,
   ValueSchema,
 } from "../../gen/google/protobuf/value_pb"
-import { normalizeBugfixResultItems as normalizeBugfixResultItemsFromContract } from "./bugfix-result-normalizer"
-import { resolveCursorToolDefinitionKey } from "./cursor-tool-mapper"
-import { resolveMcpCallFields as resolveMcpCallFieldsFromContract } from "./mcp-call-contract"
+import { normalizeBugfixResultItems as normalizeBugfixResultItemsFromContract } from "./tools/bugfix-result-normalizer"
+import { resolveCursorToolDefinitionKey } from "./tools/cursor-tool-mapper"
+import { resolveMcpCallFields as resolveMcpCallFieldsFromContract } from "./tools/mcp-call-contract"
 
 /**
  * Safely convert unknown value to string
@@ -562,7 +589,31 @@ interface ListDirArgs {
 interface GrepArgs {
   query?: string
   pattern?: string
+  Query?: string
   path?: string
+  SearchPath?: string
+  searchPath?: string
+  search_path?: string
+  glob?: string
+  includes?: string[]
+  Includes?: string[]
+  output_mode?: string
+  outputMode?: string
+  matchPerLine?: boolean
+  match_per_line?: boolean
+  MatchPerLine?: boolean
+  caseInsensitive?: boolean
+  case_insensitive?: boolean
+  CaseInsensitive?: boolean
+  isRegex?: boolean
+  is_regex?: boolean
+  IsRegex?: boolean
+  head_limit?: number
+  headLimit?: number
+  HeadLimit?: number
+  offset?: number
+  Offset?: number
+  type?: string
   case_sensitive?: boolean
 }
 
@@ -697,6 +748,7 @@ type ToolArgs =
   | ExecuteHookArgs
 
 type ToolFamily =
+  | "get_mcp_tools"
   | "read_mcp_resource"
   | "list_mcp_resources"
   | "read_lints"
@@ -738,6 +790,9 @@ type ToolFamily =
   | "await"
   | "ai_attribution"
   | "pr_management"
+  | "blame_by_file_path"
+  | "report_bug"
+  | "set_active_branch"
   | "unknown"
 
 type ToolResultProjectionStatus =
@@ -756,6 +811,12 @@ type ToolResultProjectionStatus =
 interface ToolCompletionExtraData {
   beforeContent?: string
   afterContent?: string
+  editSuccess?: {
+    linesAdded?: number
+    linesRemoved?: number
+    diffString?: string
+    message?: string
+  }
   readSuccess?: {
     path?: string
     content?: string
@@ -763,11 +824,37 @@ interface ToolCompletionExtraData {
     totalLines?: number
     fileSize?: bigint | number
     truncated?: boolean
+    rangeApplied?: boolean
+    relatedCursorRulePaths?: string[]
+    relatedCursorRules?: Array<Record<string, unknown>>
   }
   shellResult?: {
-    stdout: string
-    stderr: string
-    exitCode: number
+    stdout?: string
+    stderr?: string
+    exitCode?: number
+    shellId?: number
+    pid?: number
+    interleavedOutput?: string
+    msToWait?: number
+    localExecutionTimeMs?: number
+    executionTime?: number
+    aborted?: boolean
+    abortReason?: number
+    backgroundReason?: number
+    outputLocation?: {
+      filePath?: string
+      lineStart?: number
+      lineEnd?: number
+    }
+    terminalsFolder?: string
+    timeoutBehavior?: number
+    hardTimeout?: number
+    requestedSandboxPolicy?: { type?: unknown } | null
+    isBackground?: boolean
+    description?: string
+    classifierResult?: Record<string, unknown> | CommandClassifierResult
+    closeStdin?: boolean
+    fileOutputThresholdBytes?: bigint | number
   }
   lsDirectoryTreeRoot?: Record<string, unknown>
   grepSuccess?: {
@@ -782,6 +869,14 @@ interface ToolCompletionExtraData {
     deletedFile?: string
     fileSize?: bigint | number
     prevContent?: string
+  }
+  taskSuccess?: {
+    conversationSteps?: Array<Record<string, unknown>>
+    agentId?: string
+    isBackground?: boolean
+    durationMs?: bigint | number
+    resultSuffix?: string
+    transcriptPath?: string
   }
   diagnosticsSuccess?: {
     path?: string
@@ -854,6 +949,7 @@ export class CursorGrpcService {
     "list_mcp_resources",
     "read_lints",
     "fetch",
+    "generate_image",
     "record_screen",
     "computer_use",
     "write_shell_stdin",
@@ -869,6 +965,7 @@ export class CursorGrpcService {
   ])
   private readonly protocolInlineOnlyFamilies: ReadonlySet<ToolFamily> =
     new Set([
+      "get_mcp_tools",
       "fix_lints",
       "read_todos",
       "apply_agent_diff",
@@ -878,7 +975,6 @@ export class CursorGrpcService {
       "web_search",
       "exa_search",
       "exa_fetch",
-      "generate_image",
       "task",
       "ask_question",
       "switch_mode",
@@ -1277,14 +1373,30 @@ export class CursorGrpcService {
   createShellOutputExitResponse(
     code: number = 0,
     aborted: boolean = false,
-    cwd: string = ""
+    cwd: string = "",
+    options?: {
+      outputLocation?: unknown
+      abortReason?: unknown
+      localExecutionTimeMs?: unknown
+    }
   ): Buffer {
     return this.wrapInteractionUpdate(
       "shellOutputDelta",
       create(ShellOutputDeltaUpdateSchema, {
         event: {
           case: "exit" as const,
-          value: create(ShellStreamExitSchema, { code, aborted, cwd }),
+          value: create(ShellStreamExitSchema, {
+            code,
+            aborted,
+            cwd,
+            outputLocation: this.normalizeOutputLocation(
+              options?.outputLocation
+            ),
+            abortReason: this.normalizeShellAbortReason(options?.abortReason),
+            localExecutionTimeMs: this.parseOptionalNonNegativeInt(
+              options?.localExecutionTimeMs
+            ),
+          }),
         },
       })
     )
@@ -1620,7 +1732,7 @@ export class CursorGrpcService {
               path,
               fileText: newContent,
               toolCallId,
-              returnFileContentAfterWrite: true,
+              returnFileContentAfterWrite: false,
             }),
           },
         }),
@@ -1683,6 +1795,8 @@ export class CursorGrpcService {
           return "list_mcp_resources"
         case "CLIENT_SIDE_TOOL_V2_READ_MCP_RESOURCE":
           return "read_mcp_resource"
+        case "CLIENT_SIDE_TOOL_V2_GET_MCP_TOOLS":
+          return "get_mcp_tools"
         case "CLIENT_SIDE_TOOL_V2_DIAGNOSTICS":
         case "CLIENT_SIDE_TOOL_V2_READ_LINTS":
           return "read_lints"
@@ -1720,10 +1834,12 @@ export class CursorGrpcService {
           return "write_shell_stdin"
         case "CLIENT_SIDE_TOOL_V2_TASK":
         case "CLIENT_SIDE_TOOL_V2_TASK_V2":
-        case "CLIENT_SIDE_TOOL_V2_BACKGROUND_COMPOSER_FOLLOWUP":
-        case "CLIENT_SIDE_TOOL_V2_AWAIT_TASK":
-        case "CLIENT_SIDE_TOOL_V2_UPDATE_PROJECT":
           return "task"
+        case "CLIENT_SIDE_TOOL_V2_BACKGROUND_COMPOSER_FOLLOWUP":
+        case "CLIENT_SIDE_TOOL_V2_UPDATE_PROJECT":
+          return "truncated"
+        case "CLIENT_SIDE_TOOL_V2_AWAIT_TASK":
+          return "await"
         case "CLIENT_SIDE_TOOL_V2_TODO_READ":
           return "read_todos"
         case "CLIENT_SIDE_TOOL_V2_TODO_WRITE":
@@ -1753,14 +1869,14 @@ export class CursorGrpcService {
     if (normalized.includes("reapply")) return "apply_agent_diff"
     if (normalized.includes("fetchrules")) return "read"
     if (normalized.includes("searchsymbols")) return "sem_search"
-    if (normalized.includes("backgroundcomposerfollowup")) return "task"
+    if (normalized.includes("backgroundcomposerfollowup")) return "truncated"
     if (normalized.includes("knowledgebase")) return "web_search"
     if (normalized.includes("fetchpullrequest")) return "web_fetch"
     if (normalized.includes("creatediagram")) return "generate_image"
     if (normalized.includes("gotodefinition")) return "sem_search"
-    if (normalized.includes("awaittask")) return "task"
+    if (normalized.includes("awaittask")) return "await"
     if (normalized.includes("readproject")) return "ls"
-    if (normalized.includes("updateproject")) return "task"
+    if (normalized.includes("updateproject")) return "truncated"
 
     if (
       normalized.includes("readmcpresource") ||
@@ -1773,6 +1889,9 @@ export class CursorGrpcService {
       normalized.includes("listmcp")
     ) {
       return "list_mcp_resources"
+    }
+    if (normalized.includes("getmcptools")) {
+      return "get_mcp_tools"
     }
     if (
       normalized.includes("readlints") ||
@@ -1830,6 +1949,26 @@ export class CursorGrpcService {
       normalized.includes("create_pr")
     )
       return "pr_management"
+    if (
+      normalized.includes("blamebyfilepath") ||
+      normalized.includes("blame_by_file_path")
+    )
+      return "blame_by_file_path"
+    if (normalized.includes("reportbug") || normalized.includes("report_bug")) {
+      // Distinguish report_bug from report_bugfix_results
+      if (
+        normalized.includes("bugfix") ||
+        normalized.includes("bugfixresults")
+      ) {
+        return "report_bugfix_results"
+      }
+      return "report_bug"
+    }
+    if (
+      normalized.includes("setactivebranch") ||
+      normalized.includes("set_active_branch")
+    )
+      return "set_active_branch"
     if (normalized.includes("askquestion")) return "ask_question"
     if (normalized.includes("switchmode")) return "switch_mode"
     if (normalized.includes("createplan")) return "create_plan"
@@ -1844,8 +1983,7 @@ export class CursorGrpcService {
     if (normalized.includes("executehook") || normalized === "hook") {
       return "execute_hook"
     }
-    if (normalized.includes("task") || normalized.includes("subagent"))
-      return "task"
+    if (normalized.includes("task")) return "task"
     if (
       normalized.includes("grep") ||
       normalized.includes("ripgrep") ||
@@ -1911,6 +2049,7 @@ export class CursorGrpcService {
     }
     if (family === "setup_vm_environment")
       return "setup_vm_environment_tool_call"
+    if (family === "get_mcp_tools") return "get_mcp_tools_tool_call"
     if (family === "read_todos") return "read_todos_tool_call"
     if (family === "apply_agent_diff") return "apply_agent_diff_tool_call"
     if (family === "sem_search") return "sem_search_tool_call"
@@ -2279,6 +2418,129 @@ export class CursorGrpcService {
       targetDirectory: safeString(
         args.path || args.targetDirectory || args.target_directory
       ),
+    }
+  }
+
+  private escapeGrepLiteralPattern(value: string): string {
+    return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&")
+  }
+
+  private collapseGrepGlobPatterns(patterns: string[]): string | undefined {
+    const normalized = patterns
+      .map((entry) => safeString(entry).trim())
+      .filter((entry) => entry.length > 0)
+    if (normalized.length === 0) return undefined
+    if (normalized.length === 1) return normalized[0]
+
+    const positive = normalized.filter((entry) => !entry.startsWith("!"))
+    const negative = normalized
+      .filter((entry) => entry.startsWith("!"))
+      .map((entry) => entry.slice(1))
+      .filter((entry) => entry.length > 0)
+
+    if (positive.length > 1) {
+      // agent.v1 GrepArgs currently supports a single glob field, so collapse
+      // multi-include official payloads into a best-effort brace glob.
+      return `{${positive.join(",")}}`
+    }
+    if (positive.length === 1) {
+      return positive[0]
+    }
+    if (negative.length === 1) {
+      return `!${negative[0]}`
+    }
+    return `!{${negative.join(",")}}`
+  }
+
+  private normalizeGrepCallArgs(args: Record<string, unknown>): {
+    pattern: string
+    path: string
+    glob?: string
+    outputMode?: string
+    caseInsensitive?: boolean
+    type?: string
+    headLimit?: number
+    offset?: number
+  } {
+    const hasOfficialShape =
+      "SearchPath" in args ||
+      "Query" in args ||
+      "Includes" in args ||
+      "MatchPerLine" in args ||
+      "CaseInsensitive" in args ||
+      "IsRegex" in args
+
+    const explicitPattern = safeString(args.pattern).trim()
+    const query = safeString(
+      explicitPattern ||
+        args.query ||
+        args.Query ||
+        args.regex ||
+        args.searchTerm ||
+        args.search_term
+    ).trim()
+    const isRegexRaw = args.isRegex ?? args.is_regex ?? args.IsRegex
+    const isRegex =
+      isRegexRaw === undefined ? undefined : this.parseBooleanFlag(isRegexRaw)
+    const pattern =
+      !explicitPattern &&
+      query &&
+      (isRegex === false || (hasOfficialShape && isRegex !== true))
+        ? this.escapeGrepLiteralPattern(query)
+        : query
+    const path = safeString(
+      args.path || args.SearchPath || args.searchPath || args.search_path
+    ).trim()
+    const directGlob = safeString(args.glob).trim()
+    const includes = this.toStringArray(
+      args.includes ?? args.Includes ?? args.include
+    )
+    const glob = directGlob || this.collapseGrepGlobPatterns(includes)
+    const explicitOutputMode = safeString(
+      args.output_mode || args.outputMode
+    ).trim()
+    const matchPerLineRaw =
+      args.matchPerLine ?? args.match_per_line ?? args.MatchPerLine
+    const matchPerLine =
+      matchPerLineRaw === undefined
+        ? undefined
+        : this.parseBooleanFlag(matchPerLineRaw)
+    const outputMode =
+      explicitOutputMode ||
+      (matchPerLine === false
+        ? "files_with_matches"
+        : matchPerLine === true || hasOfficialShape
+          ? "content"
+          : "")
+    const caseInsensitiveRaw =
+      args.caseInsensitive ??
+      args.case_insensitive ??
+      args.CaseInsensitive ??
+      args["-i"]
+    const caseSensitiveRaw =
+      args.case_sensitive ?? args.caseSensitive ?? args.CaseSensitive
+    const caseInsensitive =
+      caseInsensitiveRaw === undefined
+        ? caseSensitiveRaw === undefined
+          ? undefined
+          : !this.parseBooleanFlag(caseSensitiveRaw, true)
+        : this.parseBooleanFlag(caseInsensitiveRaw)
+    const type = safeString(args.type).trim()
+    const headLimit =
+      this.parseOptionalNonNegativeInt(
+        args.head_limit ?? args.headLimit ?? args.HeadLimit
+      ) ?? (hasOfficialShape ? 50 : undefined)
+    const offset = this.parseOptionalNonNegativeInt(args.offset ?? args.Offset)
+
+    return {
+      pattern,
+      path,
+      ...(glob ? { glob } : {}),
+      ...(outputMode ? { outputMode } : {}),
+      ...(caseInsensitive !== undefined ? { caseInsensitive } : {}),
+      ...(type ? { type } : {}),
+      ...(headLimit !== undefined ? { headLimit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
     }
   }
 
@@ -2678,6 +2940,175 @@ export class CursorGrpcService {
     return normalized
   }
 
+  private normalizeOptionalBigInt(value: unknown): bigint | undefined {
+    if (value === null || value === undefined) return undefined
+    if (typeof value === "bigint") return value >= 0n ? value : undefined
+    if (typeof value === "number") {
+      if (!Number.isFinite(value) || value < 0) return undefined
+      return BigInt(Math.floor(value))
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim()
+      if (!trimmed) return undefined
+      try {
+        const parsed = BigInt(trimmed)
+        return parsed >= 0n ? parsed : undefined
+      } catch {
+        return undefined
+      }
+    }
+    return undefined
+  }
+
+  private normalizeOutputLocation(value: unknown) {
+    if (!value || typeof value !== "object") return undefined
+    const record = value as Record<string, unknown>
+    const filePath = safeString(record.filePath || record.file_path).trim()
+    const sizeBytes = this.normalizeOptionalBigInt(
+      record.sizeBytes ?? record.size_bytes
+    )
+    const lineCount = this.normalizeOptionalBigInt(
+      record.lineCount ?? record.line_count
+    )
+    if (!filePath && sizeBytes === undefined && lineCount === undefined) {
+      return undefined
+    }
+    return create(OutputLocationSchema, {
+      filePath,
+      sizeBytes: sizeBytes ?? 0n,
+      lineCount: lineCount ?? 0n,
+    })
+  }
+
+  private normalizeShellAbortReason(
+    value: unknown
+  ): ShellAbortReason | undefined {
+    const parsed = this.parseOptionalNonNegativeInt(value)
+    return parsed === undefined ? undefined : (parsed as ShellAbortReason)
+  }
+
+  private normalizeShellBackgroundReason(
+    value: unknown
+  ): ShellBackgroundReason | undefined {
+    const parsed = this.parseOptionalNonNegativeInt(value)
+    return parsed === undefined ? undefined : (parsed as ShellBackgroundReason)
+  }
+
+  private normalizeTimeoutBehavior(
+    value: unknown
+  ): TimeoutBehavior | undefined {
+    const parsed = this.parseOptionalNonNegativeInt(value)
+    return parsed === undefined ? undefined : (parsed as TimeoutBehavior)
+  }
+
+  private normalizeShellClassifierResult(value: unknown) {
+    if (!value || typeof value !== "object") return undefined
+    const record = value as Record<string, unknown>
+    const commands = Array.isArray(record.commands)
+      ? record.commands
+          .map((entry) => {
+            if (!entry || typeof entry !== "object") return undefined
+            const command = entry as Record<string, unknown>
+            return {
+              name: safeString(command.name),
+              arguments: Array.isArray(command.arguments)
+                ? command.arguments.map((arg) => safeString(arg))
+                : [],
+            }
+          })
+          .filter((entry) => !!entry)
+      : []
+    const suggestedSandboxMode = this.parseOptionalNonNegativeInt(
+      record.suggestedSandboxMode ?? record.suggested_sandbox_mode
+    )
+    const classificationFailed = this.parseBooleanFlag(
+      record.classificationFailed ?? record.classification_failed
+    )
+    if (
+      commands.length === 0 &&
+      suggestedSandboxMode === undefined &&
+      !classificationFailed
+    ) {
+      return undefined
+    }
+    return create(CommandClassifierResultSchema, {
+      commands,
+      suggestedSandboxMode: suggestedSandboxMode ?? 0,
+      classificationFailed,
+    })
+  }
+
+  private buildShellArgsMessage(
+    callId: string,
+    args: Record<string, unknown>,
+    shellResult?: ToolCompletionExtraData["shellResult"]
+  ) {
+    const command = safeString(args.command)
+    const workingDirectory = safeString(
+      args.cwd || args.working_directory || args.workingDirectory
+    )
+    const parsed = buildShellParsingMetadata(command)
+    const requestedSandboxPolicyArg =
+      args.requestedSandboxPolicy &&
+      typeof args.requestedSandboxPolicy === "object"
+        ? (args.requestedSandboxPolicy as Record<string, unknown>)
+        : args.requested_sandbox_policy &&
+            typeof args.requested_sandbox_policy === "object"
+          ? (args.requested_sandbox_policy as Record<string, unknown>)
+          : undefined
+    const requestedSandboxType = this.parseOptionalNonNegativeInt(
+      shellResult?.requestedSandboxPolicy?.type ??
+        requestedSandboxPolicyArg?.type
+    )
+    const timeoutBehavior = this.normalizeTimeoutBehavior(
+      shellResult?.timeoutBehavior ??
+        args.timeoutBehavior ??
+        args.timeout_behavior
+    )
+    const hardTimeout = this.parseOptionalNonNegativeInt(
+      shellResult?.hardTimeout ?? args.hardTimeout ?? args.hard_timeout
+    )
+    const fileOutputThresholdBytes = this.normalizeOptionalBigInt(
+      shellResult?.fileOutputThresholdBytes ??
+        args.fileOutputThresholdBytes ??
+        args.file_output_threshold_bytes
+    )
+    return create(ShellArgsSchema, {
+      command,
+      workingDirectory,
+      timeout: normalizeShellTimeoutMs(args.timeout),
+      toolCallId: safeString(args.toolCallId || args.tool_call_id || callId),
+      simpleCommands: parsed.simpleCommands,
+      hasInputRedirect: parsed.hasInputRedirect,
+      hasOutputRedirect: parsed.hasOutputRedirect,
+      parsingResult: parsed.parsingResult,
+      requestedSandboxPolicy:
+        requestedSandboxType !== undefined
+          ? create(SandboxPolicySchema, {
+              type: requestedSandboxType as SandboxPolicy_Type,
+            })
+          : undefined,
+      fileOutputThresholdBytes,
+      isBackground: this.parseBooleanFlag(
+        shellResult?.isBackground ?? args.isBackground ?? args.is_background
+      ),
+      skipApproval: true,
+      timeoutBehavior: timeoutBehavior ?? TimeoutBehavior.UNSPECIFIED,
+      hardTimeout,
+      description:
+        safeString(shellResult?.description || args.description).trim() ||
+        undefined,
+      classifierResult: this.normalizeShellClassifierResult(
+        shellResult?.classifierResult ??
+          args.classifierResult ??
+          args.classifier_result
+      ),
+      closeStdin: this.parseBooleanFlag(
+        shellResult?.closeStdin ?? args.closeStdin ?? args.close_stdin
+      ),
+    })
+  }
+
   private normalizeReadLintsDiagnosticPosition(
     value: unknown
   ): { line: number; column: number } | undefined {
@@ -2859,11 +3290,10 @@ export class CursorGrpcService {
       .map((s) => (typeof s === "string" ? s.trim() : ""))
       .filter((s) => s.length > 0)
 
-    // Build plan text: prefer explicit plan, then compose from steps as markdown
+    // Build plan text from explicit narrative fields only.
+    // Do not mirror steps into `plan`, because Cursor already renders todos
+    // separately and the UI would show duplicated content.
     let plan = safeString(args.plan).trim()
-    if (!plan && stepsStrings.length > 0) {
-      plan = stepsStrings.map((s, i) => `${i + 1}. ${s}`).join("\n")
-    }
     if (!plan) {
       plan = overview || title || "Plan"
     }
@@ -2972,11 +3402,15 @@ export class CursorGrpcService {
     )
     const model = safeString(args.model).trim()
     const resume = safeString(args.resume).trim()
+    const agentId = safeString(args.agentId || args.agent_id).trim()
+    const attachments = this.toStringArray(args.attachments)
     return create(TaskArgsSchema, {
       description,
       prompt,
       model: model || undefined,
       resume: resume || undefined,
+      agentId: agentId || undefined,
+      attachments,
     })
   }
 
@@ -3156,23 +3590,12 @@ export class CursorGrpcService {
         }
       }
       case "shell": {
-        const a = args as ShellArgs
-        const command = safeString(a.command)
-        const parsed = buildShellParsingMetadata(command)
         return {
           case: "shellStreamArgs" as const,
-          value: create(ShellArgsSchema, {
-            command,
-            workingDirectory: safeString(
-              a.cwd || a.working_directory || a.workingDirectory
-            ),
-            timeout: normalizeShellTimeoutMs(a.timeout),
+          value: this.buildShellArgsMessage(
             toolCallId,
-            simpleCommands: parsed.simpleCommands,
-            hasInputRedirect: parsed.hasInputRedirect,
-            hasOutputRedirect: parsed.hasOutputRedirect,
-            parsingResult: parsed.parsingResult,
-          }),
+            args as Record<string, unknown>
+          ),
         }
       }
       case "ls": {
@@ -3186,12 +3609,18 @@ export class CursorGrpcService {
         }
       }
       case "grep": {
-        const a = args as GrepArgs
+        const a = this.normalizeGrepCallArgs(args as Record<string, unknown>)
         return {
           case: "grepArgs" as const,
           value: create(GrepArgsSchema, {
-            pattern: safeString(a.query || a.pattern),
-            path: safeString(a.path),
+            pattern: a.pattern,
+            path: a.path || undefined,
+            glob: a.glob,
+            outputMode: a.outputMode,
+            caseInsensitive: a.caseInsensitive,
+            type: a.type,
+            headLimit: a.headLimit,
+            offset: a.offset,
             toolCallId,
           }),
         }
@@ -3341,6 +3770,7 @@ export class CursorGrpcService {
   private buildEmptyToolCallV2(toolName: string, toolFamilyHint?: ToolFamily) {
     const family = this.resolveToolFamily(toolName, toolFamilyHint)
     const familyToCase: Record<ToolFamily, string> = {
+      get_mcp_tools: "getMcpToolsToolCall",
       read_mcp_resource: "readMcpResourceToolCall",
       list_mcp_resources: "listMcpResourcesToolCall",
       read_lints: "readLintsToolCall",
@@ -3383,6 +3813,9 @@ export class CursorGrpcService {
       ai_attribution: "aiAttributionToolCall",
       mcp_auth: "mcpAuthToolCall",
       pr_management: "prManagementToolCall",
+      blame_by_file_path: "blameByFilePathToolCall",
+      report_bug: "reportBugToolCall",
+      set_active_branch: "setActiveBranchToolCall",
       unknown: "truncatedToolCall",
     }
     const matchedCase = familyToCase[family] || "truncatedToolCall"
@@ -3430,10 +3863,7 @@ export class CursorGrpcService {
         return {
           case: "shellToolCall" as const,
           value: create(ShellToolCallSchema, {
-            args: create(ShellArgsSchema, {
-              command: safeString(args.command),
-              workingDirectory: safeString(args.cwd || args.working_directory),
-            }),
+            args: this.buildShellArgsMessage(callId, args),
           }),
         }
       case "delete":
@@ -3457,16 +3887,24 @@ export class CursorGrpcService {
           }),
         }
       }
-      case "grep":
+      case "grep": {
+        const normalizedGrepArgs = this.normalizeGrepCallArgs(args)
         return {
           case: "grepToolCall" as const,
           value: create(GrepToolCallSchema, {
             args: create(GrepArgsSchema, {
-              pattern: safeString(args.query || args.pattern),
-              path: safeString(args.path),
+              pattern: normalizedGrepArgs.pattern,
+              path: normalizedGrepArgs.path || undefined,
+              glob: normalizedGrepArgs.glob,
+              outputMode: normalizedGrepArgs.outputMode,
+              caseInsensitive: normalizedGrepArgs.caseInsensitive,
+              type: normalizedGrepArgs.type,
+              headLimit: normalizedGrepArgs.headLimit,
+              offset: normalizedGrepArgs.offset,
             }),
           }),
         }
+      }
       case "read": {
         const normalizedReadArgs = this.normalizeReadToolArgs(args)
         return {
@@ -3677,6 +4115,28 @@ export class CursorGrpcService {
             }),
           }),
         }
+      case "get_mcp_tools":
+        return {
+          case: "getMcpToolsToolCall" as const,
+          value: create(GetMcpToolsToolCallSchema, {
+            args: create(GetMcpToolsArgsSchema, {
+              server:
+                safeString(
+                  args.server ||
+                    args.serverName ||
+                    args.server_name ||
+                    args.providerIdentifier ||
+                    args.provider_identifier
+                ).trim() || undefined,
+              toolName:
+                safeString(
+                  args.toolName || args.tool_name || args.name
+                ).trim() || undefined,
+              pattern: safeString(args.pattern).trim() || undefined,
+              toolCallId: callId,
+            }),
+          }),
+        }
       case "apply_agent_diff":
         return {
           case: "applyAgentDiffToolCall" as const,
@@ -3740,9 +4200,9 @@ export class CursorGrpcService {
       }
       case "exa_fetch":
         return {
-          case: "fetchToolCall" as const,
-          value: create(FetchToolCallSchema, {
-            args: create(FetchArgsSchema, {
+          case: "webFetchToolCall" as const,
+          value: create(WebFetchToolCallSchema, {
+            args: create(WebFetchArgsSchema, {
               url: safeString(
                 args.url || (Array.isArray(args.ids) ? args.ids[0] : "")
               ),
@@ -3839,6 +4299,55 @@ export class CursorGrpcService {
           }),
         }
       }
+      case "blame_by_file_path":
+        return {
+          case: "blameByFilePathToolCall" as const,
+          value: create(BlameByFilePathToolCallSchema, {
+            args: create(BlameByFilePathArgsSchema, {
+              filePath: safeString(args.filePath || args.file_path),
+              startLine: this.parseOptionalNonNegativeInt(
+                args.startLine ?? args.start_line
+              ),
+              endLine: this.parseOptionalNonNegativeInt(
+                args.endLine ?? args.end_line
+              ),
+            }),
+          }),
+        }
+      case "report_bug":
+        return {
+          case: "reportBugToolCall" as const,
+          value: create(ReportBugToolCallSchema, {
+            args: create(ReportBugArgsSchema, {
+              title: safeString(args.title),
+              file: safeString(
+                args.file || args.path || args.filePath || args.file_path
+              ),
+              startLine:
+                this.parseOptionalNonNegativeInt(
+                  args.startLine ?? args.start_line
+                ) ?? 0,
+              endLine:
+                this.parseOptionalNonNegativeInt(
+                  args.endLine ?? args.end_line
+                ) ?? 0,
+              description: safeString(args.description),
+              severity: safeString(args.severity),
+              category: safeString(args.category),
+              rationale: safeString(args.rationale),
+            }),
+          }),
+        }
+      case "set_active_branch":
+        return {
+          case: "setActiveBranchToolCall" as const,
+          value: create(SetActiveBranchToolCallSchema, {
+            args: create(SetActiveBranchArgsSchema, {
+              path: safeString(args.path),
+              branchName: safeString(args.branchName || args.branch_name),
+            }),
+          }),
+        }
       case "generate_image": {
         const referenceImagePaths =
           this.toStringArray(args.referenceImagePaths).length > 0
@@ -4171,7 +4680,17 @@ export class CursorGrpcService {
             exitCode: shellResult?.exitCode ?? 1,
             stdout: shellResult?.stdout || "",
             stderr: shellResult?.stderr || statusMessage || result,
-            aborted: status === "aborted",
+            outputLocation: this.normalizeOutputLocation(
+              shellResult?.outputLocation
+            ),
+            interleavedOutput: shellResult?.interleavedOutput || undefined,
+            abortReason: this.normalizeShellAbortReason(
+              shellResult?.abortReason
+            ),
+            aborted: shellResult?.aborted ?? status === "aborted",
+            localExecutionTimeMs: this.parseOptionalNonNegativeInt(
+              shellResult?.localExecutionTimeMs
+            ),
           }),
         }
       } else {
@@ -4183,6 +4702,19 @@ export class CursorGrpcService {
             exitCode: shellResult?.exitCode ?? 0,
             stdout: shellResult?.stdout || result,
             stderr: shellResult?.stderr || "",
+            outputLocation: this.normalizeOutputLocation(
+              shellResult?.outputLocation
+            ),
+            shellId: this.parseOptionalNonNegativeInt(shellResult?.shellId),
+            interleavedOutput: shellResult?.interleavedOutput || undefined,
+            pid: this.parseOptionalNonNegativeInt(shellResult?.pid),
+            msToWait: this.parseOptionalNonNegativeInt(shellResult?.msToWait),
+            localExecutionTimeMs: this.parseOptionalNonNegativeInt(
+              shellResult?.localExecutionTimeMs
+            ),
+            backgroundReason: this.normalizeShellBackgroundReason(
+              shellResult?.backgroundReason
+            ),
           }),
         }
       }
@@ -4190,12 +4722,24 @@ export class CursorGrpcService {
       return {
         case: "shellToolCall" as const,
         value: create(ShellToolCallSchema, {
-          args: create(ShellArgsSchema, {
-            command,
-            workingDirectory,
-          }),
+          args: this.buildShellArgsMessage(callId, args, shellResult),
           result: create(ShellResultSchema, {
             result: resultOneOf,
+            sandboxPolicy:
+              shellResult?.requestedSandboxPolicy &&
+              this.parseOptionalNonNegativeInt(
+                shellResult.requestedSandboxPolicy.type
+              ) !== undefined
+                ? create(SandboxPolicySchema, {
+                    type: this.parseOptionalNonNegativeInt(
+                      shellResult.requestedSandboxPolicy.type
+                    ) as SandboxPolicy_Type,
+                  })
+                : undefined,
+            isBackground: this.parseBooleanFlag(shellResult?.isBackground),
+            terminalsFolder:
+              safeString(shellResult?.terminalsFolder).trim() || undefined,
+            pid: this.parseOptionalNonNegativeInt(shellResult?.pid),
           }),
         }),
       }
@@ -4209,8 +4753,12 @@ export class CursorGrpcService {
           case: "success" as const,
           value: create(EditSuccessSchema, {
             path,
+            linesAdded: extraData?.editSuccess?.linesAdded,
+            linesRemoved: extraData?.editSuccess?.linesRemoved,
+            diffString: extraData?.editSuccess?.diffString,
             beforeFullFileContent: extraData?.beforeContent,
             afterFullFileContent: extraData?.afterContent || result,
+            message: extraData?.editSuccess?.message,
           }),
         }
       } else if (status === "file_not_found") {
@@ -4289,6 +4837,32 @@ export class CursorGrpcService {
         0xffffffff
       )
       const truncated = this.parseBooleanFlag(readSuccess?.truncated)
+      const readRange =
+        normalizedReadArgs.offset !== undefined ||
+        normalizedReadArgs.limit !== undefined
+          ? create(ReadRangeSchema, {
+              startLine:
+                normalizedReadArgs.offset !== undefined
+                  ? normalizedReadArgs.offset + 1
+                  : 1,
+              endLine:
+                normalizedReadArgs.limit !== undefined
+                  ? (normalizedReadArgs.offset ?? 0) + normalizedReadArgs.limit
+                  : totalLines,
+            })
+          : undefined
+      const relatedCursorRulePaths = Array.isArray(
+        readSuccess?.relatedCursorRulePaths
+      )
+        ? readSuccess.relatedCursorRulePaths
+            .map((entry) => safeString(entry).trim())
+            .filter((entry) => entry.length > 0)
+        : []
+      const relatedCursorRules = Array.isArray(readSuccess?.relatedCursorRules)
+        ? readSuccess.relatedCursorRules
+            .filter((entry) => !!entry && typeof entry === "object")
+            .map((entry) => create(CursorRuleSchema, entry))
+        : []
       const readResultOneOf =
         status === "success"
           ? {
@@ -4312,7 +4886,10 @@ export class CursorGrpcService {
                     ? successData.length === 0
                     : successContent.length === 0,
                 exceededLimit: truncated,
+                readRange,
                 includeLineNumbers: normalizedReadArgs.includeLineNumbers,
+                relatedCursorRulePaths,
+                relatedCursorRules,
               }),
             }
           : {
@@ -4389,6 +4966,7 @@ export class CursorGrpcService {
     }
 
     if (family === "grep") {
+      const normalizedGrepArgs = this.normalizeGrepCallArgs(args)
       const grepSuccess = extraData?.grepSuccess
       const grepSuccessRecord =
         grepSuccess && typeof grepSuccess === "object"
@@ -4407,11 +4985,13 @@ export class CursorGrpcService {
         activeEditorResultCandidate
       )
       const pattern = safeString(
-        args.query || args.pattern || args.regex || grepSuccess?.pattern
+        normalizedGrepArgs.pattern || grepSuccess?.pattern
       )
-      const path = safeString(args.path || args.include || grepSuccess?.path)
+      const path = safeString(normalizedGrepArgs.path || grepSuccess?.path)
       const outputMode = safeString(
-        grepSuccessRecord?.outputMode ?? grepSuccessRecord?.output_mode
+        normalizedGrepArgs.outputMode ??
+          grepSuccessRecord?.outputMode ??
+          grepSuccessRecord?.output_mode
       )
       const grepResultOneOf =
         status === "success"
@@ -4437,7 +5017,13 @@ export class CursorGrpcService {
         value: create(GrepToolCallSchema, {
           args: create(GrepArgsSchema, {
             pattern,
-            path,
+            path: path || undefined,
+            glob: normalizedGrepArgs.glob,
+            outputMode: outputMode || undefined,
+            caseInsensitive: normalizedGrepArgs.caseInsensitive,
+            type: normalizedGrepArgs.type,
+            headLimit: normalizedGrepArgs.headLimit,
+            offset: normalizedGrepArgs.offset,
           }),
           result: create(GrepResultSchema, {
             result: grepResultOneOf,
@@ -5118,6 +5704,49 @@ export class CursorGrpcService {
       }
     }
 
+    if (family === "get_mcp_tools") {
+      const server = safeString(
+        args.server ||
+          args.serverName ||
+          args.server_name ||
+          args.providerIdentifier ||
+          args.provider_identifier
+      ).trim()
+      const toolName = safeString(
+        args.toolName || args.tool_name || args.name
+      ).trim()
+      const pattern = safeString(args.pattern).trim()
+      const getMcpToolsResultOneOf =
+        status === "success"
+          ? {
+              case: "success" as const,
+              value: create(GetMcpToolsSuccessSchema, {
+                content: result,
+              }),
+            }
+          : {
+              case: "error" as const,
+              value: create(GetMcpToolsErrorSchema, {
+                error: statusMessage || "get_mcp_tools failed",
+              }),
+            }
+
+      return {
+        case: "getMcpToolsToolCall" as const,
+        value: create(GetMcpToolsToolCallSchema, {
+          args: create(GetMcpToolsArgsSchema, {
+            server: server || undefined,
+            toolName: toolName || undefined,
+            pattern: pattern || undefined,
+            toolCallId: callId,
+          }),
+          result: create(GetMcpToolsAgentResultSchema, {
+            result: getMcpToolsResultOneOf,
+          }),
+        }),
+      }
+    }
+
     if (family === "read_mcp_resource") {
       const readMcpSuccess = extraData?.readMcpResourceSuccess
       const uri = safeString(readMcpSuccess?.uri || args.uri)
@@ -5289,12 +5918,16 @@ export class CursorGrpcService {
 
     if (family === "exa_fetch") {
       const contents = this.normalizeExaFetchContents(args, result)
-      let exaFetchResultOneOf: FetchResult["result"]
+      const url = safeString(
+        args.url || (Array.isArray(args.ids) ? args.ids[0] : "")
+      )
+      let exaFetchResultOneOf: WebFetchResult["result"]
       if (status === "success") {
         exaFetchResultOneOf = {
           case: "success" as const,
-          value: create(FetchSuccessSchema, {
-            content:
+          value: create(WebFetchSuccessSchema, {
+            url,
+            markdown:
               typeof contents === "string"
                 ? contents
                 : typeof contents === "object" && contents !== null
@@ -5304,30 +5937,29 @@ export class CursorGrpcService {
         }
       } else if (status === "rejected") {
         exaFetchResultOneOf = {
-          case: "error" as const,
-          value: create(FetchErrorSchema, {
-            error: statusMessage || "exa_fetch rejected",
+          case: "rejected" as const,
+          value: create(WebFetchRejectedSchema, {
+            reason: statusMessage || "exa_fetch rejected",
           }),
         }
       } else {
         exaFetchResultOneOf = {
           case: "error" as const,
-          value: create(FetchErrorSchema, {
+          value: create(WebFetchErrorSchema, {
+            url,
             error: statusMessage || "exa_fetch failed",
           }),
         }
       }
 
       return {
-        case: "fetchToolCall" as const,
-        value: create(FetchToolCallSchema, {
-          args: create(FetchArgsSchema, {
-            url: safeString(
-              args.url || (Array.isArray(args.ids) ? args.ids[0] : "")
-            ),
+        case: "webFetchToolCall" as const,
+        value: create(WebFetchToolCallSchema, {
+          args: create(WebFetchArgsSchema, {
+            url,
             toolCallId: callId,
           }),
-          result: create(FetchResultSchema, {
+          result: create(WebFetchResultSchema, {
             result: exaFetchResultOneOf,
           }),
         }),
@@ -5737,6 +6369,112 @@ export class CursorGrpcService {
       }
     }
 
+    if (family === "blame_by_file_path") {
+      const blameResultOneOf =
+        status === "success"
+          ? {
+              case: "success" as const,
+              value: create(BlameByFilePathSuccessSchema, {
+                content: result,
+              }),
+            }
+          : {
+              case: "error" as const,
+              value: create(BlameByFilePathErrorSchema, {
+                errorMessage: statusMessage || "blame_by_file_path failed",
+              }),
+            }
+
+      return {
+        case: "blameByFilePathToolCall" as const,
+        value: create(BlameByFilePathToolCallSchema, {
+          args: create(BlameByFilePathArgsSchema, {
+            filePath: safeString(args.filePath || args.file_path),
+            startLine: this.parseOptionalNonNegativeInt(
+              args.startLine ?? args.start_line
+            ),
+            endLine: this.parseOptionalNonNegativeInt(
+              args.endLine ?? args.end_line
+            ),
+          }),
+          result: create(BlameByFilePathResultSchema, {
+            result: blameResultOneOf,
+          }),
+        }),
+      }
+    }
+
+    if (family === "report_bug") {
+      const reportBugResultOneOf =
+        status === "success"
+          ? {
+              case: "success" as const,
+              value: create(ReportBugSuccessSchema, {
+                output: result,
+              }),
+            }
+          : {
+              case: "error" as const,
+              value: create(ReportBugErrorSchema, {
+                errorMessage: statusMessage || "report_bug failed",
+              }),
+            }
+
+      return {
+        case: "reportBugToolCall" as const,
+        value: create(ReportBugToolCallSchema, {
+          args: create(ReportBugArgsSchema, {
+            title: safeString(args.title),
+            file: safeString(
+              args.file || args.path || args.filePath || args.file_path
+            ),
+            startLine:
+              this.parseOptionalNonNegativeInt(
+                args.startLine ?? args.start_line
+              ) ?? 0,
+            endLine:
+              this.parseOptionalNonNegativeInt(args.endLine ?? args.end_line) ??
+              0,
+            description: safeString(args.description),
+            severity: safeString(args.severity),
+            category: safeString(args.category),
+            rationale: safeString(args.rationale),
+          }),
+          result: create(ReportBugResultSchema, {
+            result: reportBugResultOneOf,
+          }),
+        }),
+      }
+    }
+
+    if (family === "set_active_branch") {
+      const setActiveBranchResultOneOf =
+        status === "success"
+          ? {
+              case: "success" as const,
+              value: create(SetActiveBranchSuccessSchema, {}),
+            }
+          : {
+              case: "error" as const,
+              value: create(SetActiveBranchErrorSchema, {
+                error: statusMessage || "set_active_branch failed",
+              }),
+            }
+
+      return {
+        case: "setActiveBranchToolCall" as const,
+        value: create(SetActiveBranchToolCallSchema, {
+          args: create(SetActiveBranchArgsSchema, {
+            path: safeString(args.path),
+            branchName: safeString(args.branchName || args.branch_name),
+          }),
+          result: create(SetActiveBranchResultSchema, {
+            result: setActiveBranchResultOneOf,
+          }),
+        }),
+      }
+    }
+
     if (family === "report_bugfix_results") {
       const reportItems = this.normalizeBugfixResultItems(args.results)
       const reportBugfixResultOneOf =
@@ -5901,12 +6639,31 @@ export class CursorGrpcService {
     }
 
     if (family === "task") {
-      const conversationSteps = Array.isArray(args.conversation_steps)
-        ? args.conversation_steps
-        : Array.isArray(args.conversationSteps)
-          ? args.conversationSteps
-          : []
-      const isBackground = !!(args.is_background ?? args.isBackground)
+      const taskSuccessExtra = extraData?.taskSuccess
+      const conversationSteps = Array.isArray(
+        taskSuccessExtra?.conversationSteps
+      )
+        ? taskSuccessExtra.conversationSteps
+        : Array.isArray(args.conversation_steps)
+          ? args.conversation_steps
+          : Array.isArray(args.conversationSteps)
+            ? args.conversationSteps
+            : []
+      const isBackground =
+        taskSuccessExtra?.isBackground ??
+        !!(args.is_background ?? args.isBackground)
+      const taskAgentId = safeString(
+        taskSuccessExtra?.agentId || args.agentId || args.agent_id
+      ).trim()
+      const durationMsRaw = taskSuccessExtra?.durationMs
+      const durationMs =
+        typeof durationMsRaw === "bigint"
+          ? durationMsRaw
+          : typeof durationMsRaw === "number" && Number.isFinite(durationMsRaw)
+            ? BigInt(Math.max(0, Math.floor(durationMsRaw)))
+            : undefined
+      const resultSuffix = safeString(taskSuccessExtra?.resultSuffix).trim()
+      const transcriptPath = safeString(taskSuccessExtra?.transcriptPath).trim()
       const taskResultOneOf =
         status === "success"
           ? {
@@ -5914,6 +6671,10 @@ export class CursorGrpcService {
               value: create(TaskSuccessSchema, {
                 conversationSteps: conversationSteps,
                 isBackground,
+                agentId: taskAgentId || undefined,
+                durationMs,
+                resultSuffix: resultSuffix || undefined,
+                transcriptPath: transcriptPath || undefined,
               }),
             }
           : {
